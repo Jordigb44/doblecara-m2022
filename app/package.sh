@@ -20,7 +20,7 @@ for arch in arm64 x86_64; do
   echo "→ Compilando $arch"
   "$SWIFTC" -O -swift-version 5 -parse-as-library -sdk "$SDK" \
     -target "$arch-apple-macos13.0" \
-    -framework SwiftUI -framework AppKit -framework PDFKit -framework UniformTypeIdentifiers \
+    -framework SwiftUI -framework AppKit -framework PDFKit -framework UniformTypeIdentifiers -framework UserNotifications \
     "$HERE/DobleCara.swift" -o "$W/DobleCara-$arch"
 done
 lipo -create -output "$W/DobleCara" "$W/DobleCara-arm64" "$W/DobleCara-x86_64"
