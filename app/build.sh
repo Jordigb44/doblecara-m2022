@@ -23,8 +23,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/DobleCara" "$APP/Contents/MacOS/"
 cp "$HERE/Info.plist" "$APP/Contents/"
-ICON=/Library/Printers/Samsung/M2020/M2020.icns
-[ -f "$ICON" ] && cp "$ICON" "$APP/Contents/Resources/AppIcon.icns" || true
+if xcrun --sdk macosx swift "$HERE/make_icon.swift" "$BUILD/AppIcon.iconset" >/dev/null 2>&1; then
+  iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns" || true
+fi
 codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
 LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 [ -x "$LSREG" ] && "$LSREG" -f "$APP" || true

@@ -14,14 +14,30 @@ App nativa de macOS (SwiftUI + PDFKit) que:
 No sustituye al driver de la impresora: funciona encima de la cola de impresión
 que ya tengas instalada.
 
-## Requisitos
+## Descarga (lo más fácil)
+
+1. Descarga `DobleCaraM2022-x.y.z-macOS.dmg` de la página de
+   [Releases](https://github.com/Jordigb44/doblecara-m2022/releases/latest).
+2. Ábrelo y arrastra **Doble Cara M2022** a **Aplicaciones**.
+3. La primera vez macOS avisará de que no puede comprobar el desarrollador (la app
+   está firmada *ad hoc*, no notarizada por Apple): clic derecho en la app → **Abrir**
+   → **Abrir**, o *Ajustes del Sistema → Privacidad y seguridad → Abrir igualmente*.
+
+App universal (Apple Silicon e Intel), macOS 13 o posterior.
+
+Para generar el paquete tú mismo: `./app/package.sh 1.0.0` (o doble clic en
+`Empaquetar.command`); deja el `.dmg` y el `.zip` en `dist/`.
+
+## Compilar desde el código
+
+### Requisitos
 
 - macOS 13 o posterior (probado en macOS 27.0.1, Apple Silicon).
 - Xcode o las Command Line Tools (`xcode-select --install`) para compilar la app.
   Si no están, el instalador crea una versión sencilla con ventanas de AppleScript.
 - La impresora ya funcionando en *Ajustes del Sistema → Impresoras y escáneres*.
 
-## Instalación
+### Instalación
 
 ```bash
 git clone https://github.com/Jordigb44/doblecara-m2022.git
@@ -81,12 +97,13 @@ Configuración en `config.sh` (o `~/.config/doblecara-m2022.conf`).
 ## Estructura
 
 ```
-app/            App nativa (DobleCara.swift, Info.plist, build.sh)
+app/            App nativa (DobleCara.swift, Info.plist), build.sh (instalar),
+                package.sh (.dmg/.zip universal) y make_icon.swift (icono)
 bin/            doblecara.sh (versión de línea de comandos) y lanzar.sh
 lib/            pdf_tool.js: separa páginas con PDFKit (JavaScript for Automation)
 diagnostico/    Scripts usados para investigar el driver de Samsung (no imprimen,
                 salvo prueba.command)
-install.sh      Instalador · Instalar.command (doble clic) · uninstall.sh
+install.sh      Instalador · Instalar.command / Empaquetar.command (doble clic) · uninstall.sh
 config.sh       Ajustes de la versión de línea de comandos
 ```
 

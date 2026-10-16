@@ -5,3 +5,4 @@ diagnostico/*.prn
 diagnostico/*.ras
 diagnostico/*.txt
 *.app/
+dist/
