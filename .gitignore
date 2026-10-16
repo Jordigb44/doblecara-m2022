@@ -1,0 +1,7 @@
+.DS_Store
+*.log
+diagnostico/diagnostico/
+diagnostico/*.prn
+diagnostico/*.ras
+diagnostico/*.txt
+*.app/
