@@ -61,7 +61,12 @@ Doble Cara M2022 ${VERSION}
 
 https://github.com/Jordigb44/doblecara-m2022
 EOF
-hdiutil create -quiet -volname "${NAME}" -srcfolder "$STAGE" -ov -format UDZO "$DIST/$BASE.dmg"
+# hdiutil a veces falla con «Resource busy» en máquinas de CI: se reintenta
+for i in 1 2 3; do
+  hdiutil create -quiet -volname "${NAME}" -srcfolder "$STAGE" -ov -format UDZO "$DIST/$BASE.dmg" && break
+  echo "  hdiutil falló (intento $i), reintentando…"; sleep 5
+  [ "$i" = 3 ] && exit 1
+done
 
 (cd "$DIST" && shasum -a 256 "$BASE.dmg" "$BASE.zip" > SHA256SUMS.txt)
 echo "✔ Listo:"

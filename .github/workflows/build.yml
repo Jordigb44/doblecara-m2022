@@ -1,0 +1,72 @@
+name: Build macOS
+
+# Genera la app universal en .dmg y .zip, más SHA256SUMS.txt.
+# - push a main o pull request hacia main: deja los archivos como artefacto del run
+# - etiqueta vX.Y.Z: además crea el release de GitHub con los archivos adjuntos
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versión
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" app/Info.plist)
+            VERSION="${BASE}-build.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Versión: $VERSION"
+
+      - name: Entorno
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun swiftc --version
+
+      - name: Empaquetar
+        run: ./app/package.sh "${{ steps.version.outputs.version }}"
+
+      - name: Comprobar paquete
+        run: |
+          cd dist
+          shasum -a 256 -c SHA256SUMS.txt
+          ditto -x -k DobleCaraM2022-*-macOS.zip /tmp/check
+          lipo -info "/tmp/check/Doble Cara M2022.app/Contents/MacOS/DobleCara"
+          codesign --verify --deep "/tmp/check/Doble Cara M2022.app"
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: DobleCaraM2022-${{ steps.version.outputs.version }}-macOS
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Crear release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Doble Cara M2022 ${{ steps.version.outputs.version }}
+          files: |
+            dist/*.dmg
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

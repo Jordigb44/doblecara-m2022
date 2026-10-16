@@ -1,5 +1,7 @@
 # Doble Cara M2022
 
+[![Build macOS](https://github.com/Jordigb44/doblecara-m2022/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Jordigb44/doblecara-m2022/actions/workflows/build.yml)
+
 Impresión a **doble cara manual** en macOS para la **Samsung Xpress M2022** (y la serie
 M2020), que no tiene dúplex automático y cuyo driver ya no ofrece esta opción en
 macOS 27. Sirve también para cualquier otra impresora sin dúplex.
@@ -106,6 +108,15 @@ diagnostico/    Scripts usados para investigar el driver de Samsung (no imprimen
 install.sh      Instalador · Instalar.command / Empaquetar.command (doble clic) · uninstall.sh
 config.sh       Ajustes de la versión de línea de comandos
 ```
+
+## Ramas y CI
+
+- **`main`**: versión estable. Cada push o pull request hacia `main` ejecuta
+  [GitHub Actions](.github/workflows/build.yml) en macOS y genera el `.dmg`, el
+  `.zip` y `SHA256SUMS.txt` como artefacto del run.
+- **`develop`**: desarrollo; se integra en `main` mediante pull request.
+- **Releases:** al subir una etiqueta `vX.Y.Z` (p. ej. `git tag v1.0.1 && git push origin v1.0.1`)
+  el CI crea el release de GitHub con los tres archivos adjuntos.
 
 ## Desinstalar
 
