@@ -7,6 +7,7 @@ import SwiftUI
 import AppKit
 import PDFKit
 import UniformTypeIdentifiers
+import UserNotifications
 
 // MARK: - App
 
@@ -22,6 +23,23 @@ struct DobleCaraApp: App {
                 .frame(minWidth: 820, minHeight: 560)
         }
         .defaultSize(width: 900, height: 600)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("Abrir PDF…") { model.openPanel() }
+                    .keyboardShortcut("o")
+                    .disabled(model.busy)
+            }
+            CommandGroup(replacing: .help) {
+                Button("Ver la bienvenida") { model.presentWelcome() }
+                Button("Calibrar la impresora…") { model.presentCalibration() }
+                    .disabled(model.busy)
+            }
+        }
+
+        Settings {
+            PreferencesView()
+                .environmentObject(model)
+        }
     }
 }
 
@@ -91,6 +109,55 @@ enum Shell {
     static func cancel(_ id: String) { run("/usr/bin/cancel", [id]) }
 }
 
+/// Notificaciones del sistema (solo funcionan cuando la app va dentro de su .app)
+enum Notifier {
+    static var available: Bool { Bundle.main.bundleIdentifier != nil }
+
+    static func requestPermission() {
+        guard available else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    static func post(_ title: String, _ body: String) {
+        guard available else { return }
+        let c = UNMutableNotificationContent()
+        c.title = title
+        c.body = body
+        c.sound = .default
+        UNUserNotificationCenter.current()
+            .add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    }
+}
+
+/// Acceso directo en el menú «PDF» de la ventana Imprimir de cualquier app
+enum PDFMenu {
+    static let name = "Doble cara manual (M2022)"
+    static var link: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/PDF Services", isDirectory: true)
+            .appendingPathComponent(name)
+    }
+
+    static var installed: Bool {
+        (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil
+            || FileManager.default.fileExists(atPath: link.path)
+    }
+
+    /// El acceso directo existe y apunta a esta copia de la app
+    static var pointsHere: Bool {
+        guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: link.path) else { return false }
+        return URL(fileURLWithPath: dest).standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL
+    }
+
+    static func set(_ on: Bool) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: link)
+        guard on else { return }
+        try? fm.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(at: link, withDestinationURL: Bundle.main.bundleURL)
+    }
+}
+
 // MARK: - Modelo
 
 enum Phase: Equatable {
@@ -101,6 +168,8 @@ enum Phase: Equatable {
     case done
     case failed(String)
 }
+
+enum PageMode: String { case all, range, custom }
 
 @MainActor
 final class Model: ObservableObject {
@@ -120,20 +189,50 @@ final class Model: ObservableObject {
     @Published var rotateB: Bool { didSet { defaults.set(rotateB, forKey: "rotateB") } }
     @Published var padBlank: Bool { didSet { defaults.set(padBlank, forKey: "padBlank") } }
     @Published var fitToPage: Bool { didSet { defaults.set(fitToPage, forKey: "fitToPage") } }
+    /// Cómo se vuelven a meter las hojas: cara impresa hacia abajo (true) o hacia arriba
+    @Published var faceDown: Bool { didSet { defaults.set(faceDown, forKey: "faceDown") } }
+    /// Con el giro de 180° de la cara B, el taco se vuelve a meter tal cual sale de la impresora
+    var reinsertAsIs: Bool { rotateB }
+    @Published var showFirstTime: Bool { didSet { defaults.set(showFirstTime, forKey: "showFirstTime") } }
+    @Published var notify: Bool { didSet { defaults.set(notify, forKey: "notify") } }
+    @Published var welcomeShown: Bool { didSet { defaults.set(welcomeShown, forKey: "welcomeShown") } }
+    @Published var pdfMenu: Bool {
+        didSet {
+            defaults.set(pdfMenu, forKey: "pdfMenu")
+            PDFMenu.set(pdfMenu)
+        }
+    }
 
     // Ajustes por trabajo
     @Published var copies = 1
-    @Published var allPages = true
+    @Published var pageMode: PageMode = .all {
+        didSet {
+            // Al pasar a «Elegir» se parte de lo que ya estaba elegido
+            if pageMode == .custom && oldValue != .custom {
+                customPages = Self.format(selection(for: oldValue))
+            }
+        }
+    }
     @Published var fromPage = 1
     @Published var toPage = 1
+    @Published var customPages = ""
+
+    // Ventanas
+    @Published var showWelcome = false
+    @Published var showCalibration = false
+    @Published private(set) var calibrating = false
 
     private var currentJob: String?
     private var evenFile: URL?
     private var sheetsInfo = ""
+    private var thumbs: [Int: NSImage] = [:]
+    private var saved: (url: URL?, doc: PDFDocument?)?
 
     private init() {
         defaults.register(defaults: ["paper": "A4", "duplex": true, "reverseB": true,
-                                     "rotateB": true, "padBlank": true, "fitToPage": false])
+                                     "rotateB": true, "padBlank": true, "fitToPage": false,
+                                     "faceDown": true, "showFirstTime": true, "notify": true,
+                                     "welcomeShown": false, "pdfMenu": true])
         printer = defaults.string(forKey: "printer") ?? ""
         paper = defaults.string(forKey: "paper") ?? "A4"
         duplex = defaults.bool(forKey: "duplex")
@@ -141,12 +240,25 @@ final class Model: ObservableObject {
         rotateB = defaults.bool(forKey: "rotateB")
         padBlank = defaults.bool(forKey: "padBlank")
         fitToPage = defaults.bool(forKey: "fitToPage")
+        faceDown = defaults.bool(forKey: "faceDown")
+        showFirstTime = defaults.bool(forKey: "showFirstTime")
+        notify = defaults.bool(forKey: "notify")
+        welcomeShown = defaults.bool(forKey: "welcomeShown")
+        // Activado por defecto: se crea (o se repara si la app cambió de sitio) al abrir la app,
+        // salvo que el usuario lo haya quitado en Preferencias
+        pdfMenu = defaults.bool(forKey: "pdfMenu")
+        if pdfMenu && !PDFMenu.pointsHere { PDFMenu.set(true) }
         refreshPrinters()
     }
 
     var pageCount: Int { doc?.pageCount ?? 0 }
     var busy: Bool { phase == .printingA || phase == .printingB || phase == .waitingFlip }
     var title: String { url?.deletingPathExtension().lastPathComponent ?? "Documento" }
+    /// La calibración siempre se hace a doble cara
+    var effectiveDuplex: Bool { duplex || calibrating }
+    var canPrint: Bool { doc != nil && !printer.isEmpty && !busy && !selection.isEmpty }
+
+    static func displayName(_ printer: String) -> String { printer.replacingOccurrences(of: "_", with: " ") }
 
     func refreshPrinters() {
         let list = Shell.printers()
@@ -159,19 +271,33 @@ final class Model: ObservableObject {
     }
 
     func load(_ u: URL) {
-        guard !busy else { NSSound.beep(); return }
-        guard let d = PDFDocument(url: u) else {
+        guard !busy, !calibrating else { NSSound.beep(); return }
+        // Se lee entero en memoria: el menú PDF de imprimir pasa archivos temporales
+        // que el sistema puede borrar en cuanto la app los abre.
+        let scoped = u.startAccessingSecurityScopedResource()
+        defer { if scoped { u.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: u), let d = PDFDocument(data: data) else {
             phase = .failed("No se pudo abrir «\(u.lastPathComponent)» como PDF.")
             return
         }
+        if d.isLocked {
+            phase = .failed("«\(u.lastPathComponent)» está protegido con contraseña.")
+            return
+        }
+        setDocument(d, url: u)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func setDocument(_ d: PDFDocument?, url u: URL?) {
         url = u
         doc = d
-        allPages = true
+        thumbs = [:]
+        pageMode = .all
         fromPage = 1
-        toPage = d.pageCount
+        toPage = max(1, d?.pageCount ?? 1)
+        customPages = ""
         copies = 1
         phase = .idle
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     func openPanel() {
@@ -181,12 +307,80 @@ final class Model: ObservableObject {
         if panel.runModal() == .OK, let u = panel.url { load(u) }
     }
 
+    func thumbnail(_ i: Int) -> NSImage? {
+        if let t = thumbs[i] { return t }
+        guard let page = doc?.page(at: i) else { return nil }
+        let img = page.thumbnail(of: NSSize(width: 220, height: 300), for: .cropBox)
+        thumbs[i] = img
+        return img
+    }
+
+    // MARK: Páginas
+
     /// Páginas elegidas (índices desde 0)
-    var selection: [Int] {
+    var selection: [Int] { selection(for: pageMode) }
+
+    private func selection(for mode: PageMode) -> [Int] {
         guard pageCount > 0 else { return [] }
-        if allPages { return Array(0..<pageCount) }
-        let a = max(1, min(fromPage, pageCount)), b = max(a, min(toPage, pageCount))
-        return Array((a - 1)...(b - 1))
+        switch mode {
+        case .all:
+            return Array(0..<pageCount)
+        case .range:
+            let a = max(1, min(fromPage, pageCount)), b = max(a, min(toPage, pageCount))
+            return Array((a - 1)...(b - 1))
+        case .custom:
+            return Self.parse(customPages, pageCount: pageCount)
+        }
+    }
+
+    /// "1-3, 5, 8-" → [0, 1, 2, 4, 7, 8, …]
+    static func parse(_ text: String, pageCount n: Int) -> [Int] {
+        var set = Set<Int>()
+        for part in text.split(whereSeparator: { $0 == "," || $0 == ";" }) {
+            let bits = part.split(separator: "-", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            if bits.count == 1, let v = Int(bits[0]), (1...n).contains(v) {
+                set.insert(v - 1)
+            } else if bits.count == 2 {
+                let a = Int(bits[0]) ?? 1, b = Int(bits[1]) ?? n
+                let lo = max(1, min(a, b)), hi = min(n, max(a, b))
+                if lo <= hi { for v in lo...hi { set.insert(v - 1) } }
+            }
+        }
+        return set.sorted()
+    }
+
+    /// [0, 1, 2, 4] → "1-3, 5"
+    static func format(_ indices: [Int]) -> String {
+        var parts: [String] = []
+        var i = 0
+        let s = indices.sorted()
+        while i < s.count {
+            var j = i
+            while j + 1 < s.count && s[j + 1] == s[j] + 1 { j += 1 }
+            parts.append(i == j ? "\(s[i] + 1)" : "\(s[i] + 1)-\(s[j] + 1)")
+            i = j + 1
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    func togglePage(_ i: Int) {
+        guard !busy else { return }
+        var set = Set(selection)
+        if set.contains(i) { set.remove(i) } else { set.insert(i) }
+        pageMode = .custom
+        customPages = Self.format(Array(set))
+    }
+
+    /// Hoja y cara en la que sale cada página (solo la primera copia)
+    struct Slot { let sheet: Int; let sideB: Bool }
+
+    var sheetPlan: [Int: Slot] {
+        var plan: [Int: Slot] = [:]
+        for (k, p) in selection.enumerated() {
+            plan[p] = effectiveDuplex ? Slot(sheet: k / 2 + 1, sideB: k % 2 == 1) : Slot(sheet: k + 1, sideB: false)
+        }
+        return plan
     }
 
     /// Secuencia completa (con copias); nil = página en blanco
@@ -201,7 +395,36 @@ final class Model: ObservableObject {
         return seq
     }
 
-    var sheetCount: Int { (sequence().count + 1) / 2 }
+    var sheetCount: Int {
+        effectiveDuplex ? (sequence().count + 1) / 2 : selection.count * max(1, copies)
+    }
+
+    /// "8 páginas → 4 hojas"
+    var summary: String {
+        let n = selection.count
+        guard doc != nil else { return "" }
+        guard n > 0 else { return "Ninguna página elegida" }
+        let per = effectiveDuplex ? (n + 1) / 2 : n
+        var s = "\(Self.plural(n, "página", "páginas")) → \(Self.plural(per, "hoja", "hojas"))"
+        if copies > 1 { s += " × \(copies) copias = \(Self.plural(sheetCount, "hoja", "hojas"))" }
+        return s
+    }
+
+    static func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
+
+    /// Paso actual de la barra de pasos
+    var currentStep: Int {
+        if !effectiveDuplex {
+            return phase == .done ? 2 : (doc == nil ? 0 : 1)
+        }
+        switch phase {
+        case .idle, .failed: return doc == nil ? 0 : 1
+        case .printingA: return 1
+        case .waitingFlip: return 2
+        case .printingB: return 3
+        case .done: return 4
+        }
+    }
 
     private func makePDF(_ indices: [Int?], rotate: Bool, name: String) -> URL? {
         guard let doc else { return nil }
@@ -245,9 +468,10 @@ final class Model: ObservableObject {
     // MARK: Impresión
 
     func start() {
-        guard doc != nil, !printer.isEmpty, !busy else { return }
+        guard canPrint else { return }
+        if notify { Notifier.requestPermission() }
         let seq = sequence()
-        if !duplex || seq.count <= 1 {
+        if !effectiveDuplex || seq.count <= 1 {
             printSingle()
             return
         }
@@ -284,7 +508,9 @@ final class Model: ObservableObject {
             if let e = r.error { phase = .failed(e); return }
             currentJob = r.id
             await waitForJob()
+            guard phase == .printingA else { return }  // cancelado
             phase = .done
+            if notify { Notifier.post("Impresión terminada", "«\(t)» ya está impreso.") }
         }
     }
 
@@ -299,9 +525,17 @@ final class Model: ObservableObject {
             guard phase == printing else { return }  // cancelado
             phase = next
             if next == .waitingFlip {
+                if notify {
+                    Notifier.post("Cara A terminada",
+                                  reinsertAsIs
+                                      ? "Vuelve a meter \(Self.plural(sheetCount, "la hoja", "las hojas")) tal cual salen, sin darles la vuelta, y pulsa «Imprimir cara B»."
+                                      : "Vuelve a meter \(Self.plural(sheetCount, "la hoja", "las hojas")) y pulsa «Imprimir cara B».")
+                }
                 NSApp.activate(ignoringOtherApps: true)
                 NSApp.requestUserAttention(.criticalRequest)
                 NSSound(named: "Glass")?.play()
+            } else if next == .done && notify && !calibrating {
+                Notifier.post("Impresión terminada", "«\(title)» ya está impreso a doble cara.")
             }
         }
     }
@@ -329,102 +563,339 @@ final class Model: ObservableObject {
         phase = .idle
     }
 
-    var flipInstructions: String {
-        var s = "1. Recoge las \(sheetCount) hoja(s) de la bandeja de salida SIN cambiar su orden.\n" +
-                "2. Mételas en la bandeja de entrada con la cara impresa hacia ABAJO y la parte de arriba del texto entrando primero en la impresora."
-        if !sheetsInfo.isEmpty { s += "\n3. " + sheetsInfo }
+    func reset() { phase = .idle }
+
+    var flipSteps: [String] {
+        let take = "Espera a que la impresora pare y recoge \(Self.plural(sheetCount, "la hoja", "las hojas")) de la bandeja de salida."
+        var s: [String]
+        if reinsertAsIs {
+            // La cara B ya va girada 180°: no hay que voltear ni girar el taco
+            s = [take,
+                 "Mételas en la bandeja de entrada TAL CUAL SALEN: sin darles la vuelta y sin girarlas.",
+                 "No cambies el orden de las hojas."]
+        } else {
+            s = [take,
+                 "No cambies el orden: mueve el taco entero.",
+                 "Mételo en la bandeja de entrada con la cara impresa hacia \(faceDown ? "ABAJO" : "ARRIBA").",
+                 "La parte de ARRIBA del texto tiene que entrar primero en la impresora."]
+        }
+        if !sheetsInfo.isEmpty { s.insert(sheetsInfo, at: 1) }
         return s
+    }
+
+    // MARK: Ventanas de ayuda
+
+    func presentWelcome() {
+        focusMainWindow()
+        showWelcome = true
+    }
+
+    func presentCalibration() {
+        guard !busy else { NSSound.beep(); return }
+        focusMainWindow()
+        showCalibration = true
+    }
+
+    private func focusMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first { $0.title == "Doble Cara M2022" }?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: Calibración
+
+    /// Guarda el documento abierto y carga la hoja de prueba de 2 hojas
+    func beginCalibration() {
+        guard !busy else { return }
+        if !calibrating { saved = (url, doc) }
+        calibrating = true
+        loadTestPage(sheets: 2)
+    }
+
+    /// Deja la app como estaba antes de calibrar
+    func endCalibration() {
+        guard calibrating else { return }
+        if busy { cancel() }
+        calibrating = false
+        if let s = saved { setDocument(s.doc, url: s.url) }
+        saved = nil
     }
 
     // MARK: Hoja de prueba
 
-    func loadTestPage() {
+    /// Crea un PDF de prueba. 1 hoja = páginas 1-2; 2 hojas = páginas 1-4 (comprueba también el orden).
+    func loadTestPage(sheets: Int = 1) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("DobleCaraM2022", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("Hoja de prueba doble cara.pdf")
         var box = CGRect(x: 0, y: 0, width: 595, height: 842)
         guard let ctx = CGContext(file as CFURL, mediaBox: &box, nil) else { return }
-        let big: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 44)]
-        let mid: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 30)]
-        let small: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 16)]
-        let pages = [("CARA A · PÁGINA 1", "Esta es la primera cara."),
-                     ("CARA B · PÁGINA 2", "Al girar la hoja como un libro, esta cara debe leerse\nen el mismo sentido que la cara A.")]
-        for (t, sub) in pages {
+        let center = NSMutableParagraphStyle()
+        center.alignment = .center
+        func attrs(_ font: NSFont, _ color: NSColor = .black) -> [NSAttributedString.Key: Any] {
+            [.font: font, .foregroundColor: color, .paragraphStyle: center]
+        }
+        for p in 1...(sheets * 2) {
+            let sheet = (p + 1) / 2, side = p % 2 == 1 ? "A" : "B"
             ctx.beginPDFPage(nil)
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-            ("↑  ARRIBA  ↑" as NSString).draw(at: CGPoint(x: 150, y: 760), withAttributes: mid)
-            (t as NSString).draw(at: CGPoint(x: 60, y: 620), withAttributes: big)
-            (sub as NSString).draw(in: CGRect(x: 60, y: 480, width: 480, height: 100), withAttributes: small)
-            ("Si la cara B sale cabeza abajo, activa «Girar cara B 180°».\nSi en documentos largos el orden sale al revés, desactiva «Cara B en orden inverso»." as NSString)
-                .draw(in: CGRect(x: 60, y: 80, width: 480, height: 80), withAttributes: small)
+            ("↑  ARRIBA  ↑" as NSString).draw(in: CGRect(x: 0, y: 750, width: 595, height: 50),
+                                               withAttributes: attrs(.boldSystemFont(ofSize: 30)))
+            ("PÁGINA" as NSString).draw(in: CGRect(x: 0, y: 610, width: 595, height: 50),
+                                        withAttributes: attrs(.boldSystemFont(ofSize: 36), .darkGray))
+            ("\(p)" as NSString).draw(in: CGRect(x: 0, y: 360, width: 595, height: 260),
+                                      withAttributes: attrs(.boldSystemFont(ofSize: 220)))
+            ("Hoja \(sheet) · cara \(side)" as NSString).draw(in: CGRect(x: 0, y: 300, width: 595, height: 50),
+                                                             withAttributes: attrs(.systemFont(ofSize: 30), .darkGray))
+            let hint = side == "A"
+                ? "Por detrás de esta hoja debe salir la página \(p + 1),\nen el mismo sentido al girarla como un libro."
+                : "Esta página debe estar detrás de la página \(p - 1)\ny leerse en el mismo sentido."
+            (hint as NSString).draw(in: CGRect(x: 60, y: 90, width: 475, height: 80),
+                                    withAttributes: attrs(.systemFont(ofSize: 16), .darkGray))
             NSGraphicsContext.restoreGraphicsState()
             ctx.endPDFPage()
         }
         ctx.closePDF()
-        load(file)
+        guard let d = PDFDocument(url: file) else { return }
+        setDocument(d, url: file)
     }
 }
 
-// MARK: - Vistas
+// MARK: - Vista principal
+
+struct ContentView: View {
+    @EnvironmentObject var m: Model
+    @AppStorage("showPageGrid") private var showPages = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            PreviewPane(showPages: $showPages)
+                .frame(minWidth: 360)
+            Divider()
+            VStack(spacing: 0) {
+                StepBar()
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                Divider()
+                panel
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                ActionBar()
+            }
+            .frame(width: 400)
+        }
+        .onOpenURL { m.load($0) }
+        .onAppear { if !m.welcomeShown { m.showWelcome = true } }
+        .onChange(of: m.pageMode) { mode in
+            if mode != .all { showPages = true }
+        }
+        .background(EmptyView().sheet(isPresented: $m.showWelcome) {
+            WelcomeSheet().environmentObject(m)
+        })
+        .background(EmptyView().sheet(isPresented: $m.showCalibration) {
+            CalibrationSheet().environmentObject(m)
+        })
+    }
+
+    @ViewBuilder private var panel: some View {
+        switch m.phase {
+        case .printingA, .printingB: PrintingPanel()
+        case .waitingFlip: FlipPanel()
+        case .done: DonePanel()
+        case .idle, .failed: SettingsForm()
+        }
+    }
+}
+
+// MARK: Barra de pasos
+
+struct StepBar: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        let steps = m.effectiveDuplex ? ["Documento", "Cara A", "Meter hojas", "Cara B"] : ["Documento", "Imprimir"]
+        let current = m.currentStep
+        HStack(alignment: .top, spacing: 4) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, name in
+                if i > 0 {
+                    Capsule()
+                        .fill(i <= current ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .frame(height: 2)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 11)
+                }
+                StepDot(number: i + 1, name: name, state: i < current ? .done : (i == current ? .active : .pending))
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct StepDot: View {
+    enum State { case done, active, pending }
+    let number: Int
+    let name: String
+    let state: State
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ZStack {
+                Circle().fill(state == .done ? Color.accentColor
+                              : state == .active ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.1))
+                Circle().strokeBorder(state == .pending ? Color.secondary.opacity(0.4) : Color.accentColor, lineWidth: 1.5)
+                if state == .done {
+                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                } else {
+                    Text("\(number)").font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(state == .active ? Color.accentColor : .secondary)
+                }
+            }
+            .frame(width: 24, height: 24)
+            Text(name)
+                .font(.caption2.weight(state == .active ? .semibold : .regular))
+                .foregroundStyle(state == .pending ? .secondary : .primary)
+                .fixedSize()
+        }
+    }
+}
+
+// MARK: Vista previa
 
 struct PDFPreview: NSViewRepresentable {
     let doc: PDFDocument?
+    /// Página que se ve (desde 1). Cambia al desplazarse y, al cambiarla, la vista salta a ella.
+    @Binding var page: Int
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
     func makeNSView(context: Context) -> PDFView {
         let v = PDFView()
         v.autoScales = true
         v.displayMode = .singlePageContinuous
         v.displaysPageBreaks = true
         v.backgroundColor = .underPageBackgroundColor
+        context.coordinator.view = v
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.pageChanged(_:)),
+                                               name: .PDFViewPageChanged, object: v)
         return v
     }
+
     func updateNSView(_ v: PDFView, context: Context) {
+        context.coordinator.parent = self
         if v.document !== doc { v.document = doc }
+        guard let doc, let current = v.currentPage else { return }
+        if doc.index(for: current) + 1 != page, let target = doc.page(at: page - 1) {
+            v.go(to: target)
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var parent: PDFPreview
+        weak var view: PDFView?
+        init(_ parent: PDFPreview) { self.parent = parent }
+
+        @objc func pageChanged(_ n: Notification) {
+            guard let v = view, let doc = v.document, let current = v.currentPage else { return }
+            let i = doc.index(for: current) + 1
+            if parent.page != i {
+                DispatchQueue.main.async { self.parent.page = i }
+            }
+        }
     }
 }
 
-struct ContentView: View {
-    @EnvironmentObject var m: Model
-    @State private var dropTargeted = false
+/// Campo numérico pequeño con flechas; escribe el número o usa las flechas
+struct NumberField: View {
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var width: CGFloat = 44
 
     var body: some View {
-        HStack(spacing: 0) {
-            preview
-                .frame(minWidth: 360)
-            Divider()
-            VStack(spacing: 0) {
-                settings
-                Divider()
-                actionBar
-            }
-            .frame(width: 400)
-        }
-        .onOpenURL { m.load($0) }
-        .sheet(isPresented: Binding(get: { m.phase == .waitingFlip }, set: { _ in })) {
-            FlipSheet().environmentObject(m)
+        let clamped = Binding<Int>(
+            get: { value },
+            set: { value = min(max($0, range.lowerBound), range.upperBound) })
+        HStack(spacing: 2) {
+            TextField("", value: clamped, format: .number.grouping(.never))
+                .labelsHidden()
+                .multilineTextAlignment(.center)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: width)
+                .fixedSize()
+            Stepper("", value: clamped, in: range)
+                .labelsHidden()
         }
     }
+}
 
-    private var preview: some View {
+/// Barra inferior de la vista previa: « Página [3] de 9 »
+struct PageNavigator: View {
+    @Binding var page: Int
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button { page = max(1, page - 1) } label: { Image(systemName: "chevron.left") }
+                .disabled(page <= 1)
+                .help("Página anterior")
+            Text("Página")
+            TextField("", value: Binding(get: { page }, set: { page = min(max($0, 1), max(1, count)) }),
+                      format: .number.grouping(.never))
+                .labelsHidden()
+                .multilineTextAlignment(.center)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 44)
+                .fixedSize()
+                .help("Escribe un número de página y pulsa Intro")
+            Text("de \(count)")
+            Button { page = min(count, page + 1) } label: { Image(systemName: "chevron.right") }
+                .disabled(page >= count)
+                .help("Página siguiente")
+        }
+        .buttonStyle(.borderless)
+        .font(.callout)
+    }
+}
+
+struct PreviewPane: View {
+    @EnvironmentObject var m: Model
+    @Binding var showPages: Bool
+    @State private var dropTargeted = false
+    @State private var page = 1
+
+    var body: some View {
         ZStack {
             if m.doc != nil {
-                PDFPreview(doc: m.doc)
-            } else {
-                VStack(spacing: 14) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 54, weight: .light))
-                        .foregroundStyle(.secondary)
-                    Text("Arrastra aquí un PDF")
-                        .font(.title2.weight(.semibold))
-                    Text("o ábrelo desde Finder con clic derecho → Abrir con → Doble Cara M2022")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center).frame(maxWidth: 280)
-                    Button("Abrir PDF…") { m.openPanel() }
-                        .controlSize(.large)
+                VStack(spacing: 0) {
+                    HStack {
+                        Picker("Vista", selection: $showPages) {
+                            Text("Vista previa").tag(false)
+                            Text("Hojas").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                        .help("«Hojas» muestra qué páginas se imprimen y en qué hoja y cara sale cada una")
+                        Spacer()
+                        Text(m.summary)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    Divider()
+                    if showPages {
+                        PagesGrid()
+                    } else {
+                        PDFPreview(doc: m.doc, page: $page)
+                        Divider()
+                        PageNavigator(page: $page, count: m.pageCount)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .underPageBackgroundColor))
+            } else {
+                EmptyDropView()
             }
             if dropTargeted {
                 RoundedRectangle(cornerRadius: 12)
@@ -437,9 +908,131 @@ struct ContentView: View {
             m.load(u)
             return true
         } isTargeted: { dropTargeted = $0 }
+        .onReceive(m.$doc) { _ in page = 1 }
     }
+}
 
-    private var settings: some View {
+struct EmptyDropView: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 54, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("Arrastra aquí un PDF")
+                .font(.title2.weight(.semibold))
+            Text("o ábrelo desde Finder con clic derecho → Abrir con → Doble Cara M2022")
+                .font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).frame(maxWidth: 280)
+            Button("Abrir PDF…") { m.openPanel() }
+                .controlSize(.large)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
+}
+
+/// Miniaturas de todas las páginas: las que se imprimen llevan su hoja y cara,
+/// las que no, salen apagadas. Clic en una para quitarla o añadirla.
+struct PagesGrid: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        let plan = m.sheetPlan
+        VStack(spacing: 0) {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 14)], spacing: 18) {
+                    ForEach(0..<m.pageCount, id: \.self) { i in
+                        PageThumb(index: i, slot: plan[i], duplex: m.effectiveDuplex)
+                            .onTapGesture { m.togglePage(i) }
+                    }
+                }
+                .padding(16)
+            }
+            Divider()
+            HStack(spacing: 14) {
+                if m.effectiveDuplex {
+                    LegendSwatch(color: .accentColor, text: "Cara A")
+                    LegendSwatch(color: .orange, text: "Cara B")
+                }
+                LegendSwatch(color: .secondary.opacity(0.35), text: "No se imprime")
+                Spacer()
+                Text("Clic en una página para quitarla o añadirla")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+        }
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
+}
+
+struct LegendSwatch: View {
+    let color: Color
+    let text: String
+    var body: some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
+            Text(text)
+        }
+    }
+}
+
+struct PageThumb: View {
+    @EnvironmentObject var m: Model
+    let index: Int
+    let slot: Model.Slot?
+    let duplex: Bool
+
+    private var tint: Color { slot?.sideB == true ? .orange : .accentColor }
+
+    var body: some View {
+        let on = slot != nil
+        VStack(spacing: 6) {
+            Group {
+                if let img = m.thumbnail(index) {
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                } else {
+                    Rectangle().fill(Color.white).aspectRatio(0.707, contentMode: .fit)
+                }
+            }
+            .frame(height: 132)
+            .background(Color.white)
+            .overlay(Rectangle().strokeBorder(on ? tint : Color.secondary.opacity(0.3), lineWidth: on ? 2.5 : 1))
+            .shadow(color: .black.opacity(on ? 0.18 : 0.05), radius: 3, y: 1)
+            .opacity(on ? 1 : 0.4)
+            .saturation(on ? 1 : 0)
+            .overlay(alignment: .top) {
+                if let slot {
+                    Text(duplex ? "Hoja \(slot.sheet) · \(slot.sideB ? "B" : "A")" : "Hoja \(slot.sheet)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(tint))
+                        .offset(y: -8)
+                }
+            }
+            Text(on ? "Página \(index + 1)" : "Página \(index + 1) · no")
+                .font(.caption)
+                .foregroundStyle(on ? .primary : .secondary)
+        }
+        .contentShape(Rectangle())
+        .help(on ? "Clic para NO imprimir esta página" : "Clic para imprimir esta página")
+        .accessibilityLabel("Página \(index + 1), \(on ? "se imprime" : "no se imprime")")
+    }
+}
+
+// MARK: Ajustes
+
+struct SettingsForm: View {
+    @EnvironmentObject var m: Model
+    @AppStorage("advancedOpen") private var advancedOpen = false
+
+    var body: some View {
         Form {
             Section {
                 HStack {
@@ -448,130 +1041,779 @@ struct ContentView: View {
                         .lineLimit(1).truncationMode(.middle)
                     Spacer()
                     if m.doc != nil {
-                        Text("\(m.pageCount) pág.").foregroundStyle(.secondary)
+                        Text(Model.plural(m.pageCount, "pág.", "pág.")).foregroundStyle(.secondary)
                     }
                     Button { m.openPanel() } label: { Image(systemName: "folder") }
                         .buttonStyle(.borderless).help("Abrir otro PDF")
                 }
-            }
-
-            Section("Impresora") {
-                HStack {
-                    Picker("Impresora", selection: $m.printer) {
-                        ForEach(m.printers, id: \.self) { Text($0.replacingOccurrences(of: "_", with: " ")).tag($0) }
+                if m.printers.isEmpty {
+                    HStack {
+                        Label("No se encontró ninguna impresora", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button { m.refreshPrinters() } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.borderless).help("Buscar impresoras otra vez")
                     }
-                    Button { m.refreshPrinters() } label: { Image(systemName: "arrow.clockwise") }
-                        .buttonStyle(.borderless).help("Actualizar lista")
+                } else {
+                    PrinterPicker()
                 }
-                Picker("Papel", selection: $m.paper) {
-                    Text("A4").tag("A4")
-                    Text("Carta (Letter)").tag("Letter")
-                }
-                Toggle("Ajustar a la página", isOn: $m.fitToPage)
             }
 
-            Section("Trabajo") {
-                Stepper("Copias: \(m.copies)", value: $m.copies, in: 1...99)
-                Picker("Páginas", selection: $m.allPages) {
-                    Text("Todas").tag(true)
-                    Text("Intervalo").tag(false)
+            Section("Qué imprimir") {
+                Picker("Páginas", selection: $m.pageMode) {
+                    Text("Todas").tag(PageMode.all)
+                    Text("Desde–hasta").tag(PageMode.range)
+                    Text("Elegir").tag(PageMode.custom)
                 }
                 .pickerStyle(.segmented)
-                if !m.allPages {
-                    HStack {
-                        Stepper("Desde \(m.fromPage)", value: $m.fromPage, in: 1...max(1, m.pageCount))
-                        Stepper("hasta \(m.toPage)", value: $m.toPage, in: 1...max(1, m.pageCount))
+                .disabled(m.doc == nil)
+
+                if m.pageMode == .range {
+                    HStack(spacing: 6) {
+                        Text("Desde")
+                        NumberField(value: $m.fromPage, range: 1...max(1, m.pageCount))
+                        Text("hasta")
+                            .padding(.leading, 6)
+                        NumberField(value: $m.toPage, range: 1...max(1, m.pageCount))
+                        Spacer()
+                        Text("de \(m.pageCount)").foregroundStyle(.secondary)
+                    }
+                    .onChange(of: m.fromPage) { v in if m.toPage < v { m.toPage = v } }
+                    .onChange(of: m.toPage) { v in if m.fromPage > v { m.fromPage = v } }
+                }
+                if m.pageMode == .custom {
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("Páginas", text: $m.customPages, prompt: Text("p. ej. 1-3, 5, 8"))
+                        Text("Escribe las páginas o haz clic en las miniaturas de la izquierda.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Toggle("Doble cara manual", isOn: $m.duplex)
+                Stepper("Copias: \(m.copies)", value: $m.copies, in: 1...99)
+                LabeledContent("Resultado") {
+                    Text(m.summary)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(m.selection.isEmpty ? Color.orange : Color.primary)
+                }
             }
 
-            if m.duplex {
-                Section("Cara B") {
-                    Toggle("Cara B en orden inverso", isOn: $m.reverseB)
-                    Toggle("Girar cara B 180°", isOn: $m.rotateB)
-                    Toggle("Dorso en blanco si las páginas son impares", isOn: $m.padBlank)
-                    Button("Cargar hoja de prueba") { m.loadTestPage() }
-                        .disabled(m.busy)
+            if m.showFirstTime {
+                Section("¿Es tu primera vez?") {
+                    Button {
+                        m.presentCalibration()
+                    } label: {
+                        Label("Calibrar la impresora…", systemImage: "wand.and.stars")
+                    }
+                    Button {
+                        m.loadTestPage()
+                    } label: {
+                        Label("Cargar hoja de prueba", systemImage: "doc.text.magnifyingglass")
+                    }
+                    Text("Haz la calibración una vez: imprime 2 hojas de prueba y te dice qué ajustar.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { advancedOpen.toggle() }
+                } label: {
+                    HStack {
+                        Label("Funciones avanzadas", systemImage: "slider.horizontal.3")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(advancedOpen ? 90 : 0))
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if advancedOpen {
+                    PrinterRows(includePrinter: false)
+                    DuplexRows()
+                    Toggle("Mostrar «¿Es tu primera vez?»", isOn: $m.showFirstTime)
+                }
+            }
+
+            if case .failed(let msg) = m.phase {
+                Section {
+                    Label(msg, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
                 }
             }
         }
         .formStyle(.grouped)
-        .disabled(m.busy)
     }
+}
 
-    private var actionBar: some View {
-        HStack(spacing: 12) {
-            status
-            Spacer()
-            if m.busy {
-                Button("Cancelar", role: .cancel) { m.cancel() }
-            }
-            Button {
-                m.start()
-            } label: {
-                Text(m.duplex ? "Imprimir cara A" : "Imprimir")
-                    .frame(minWidth: 110)
-            }
-            .keyboardShortcut(.defaultAction)
-            .controlSize(.large)
-            .disabled(m.doc == nil || m.printer.isEmpty || m.busy)
-        }
-        .padding(14)
-    }
+struct PrinterPicker: View {
+    @EnvironmentObject var m: Model
 
-    @ViewBuilder private var status: some View {
-        switch m.phase {
-        case .idle:
-            if m.doc != nil && m.duplex {
-                Label("\(m.sheetCount) hoja(s)", systemImage: "doc.on.doc").foregroundStyle(.secondary)
+    var body: some View {
+        HStack {
+            Picker("Impresora", selection: $m.printer) {
+                ForEach(m.printers, id: \.self) { Text(Model.displayName($0)).tag($0) }
             }
-        case .printingA:
-            HStack(spacing: 6) { ProgressView().controlSize(.small); Text(m.duplex ? "Imprimiendo cara A…" : "Imprimiendo…") }
-        case .waitingFlip:
-            Label("Da la vuelta a las hojas", systemImage: "arrow.uturn.down")
-        case .printingB:
-            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Imprimiendo cara B…") }
-        case .done:
-            Label("Listo", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failed(let msg):
-            Label(msg, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red).lineLimit(2).help(msg)
+            Button { m.refreshPrinters() } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.borderless).help("Actualizar lista")
         }
     }
 }
 
-struct FlipSheet: View {
+struct PrinterRows: View {
+    @EnvironmentObject var m: Model
+    /// En la pantalla principal la impresora ya se elige arriba
+    var includePrinter = true
+
+    var body: some View {
+        if includePrinter { PrinterPicker() }
+        Picker("Papel", selection: $m.paper) {
+            Text("A4").tag("A4")
+            Text("Carta (Letter)").tag("Letter")
+            Text("Legal").tag("Legal")
+            Text("A5").tag("A5")
+        }
+        Toggle("Ajustar a la página", isOn: $m.fitToPage)
+    }
+}
+
+struct DuplexRows: View {
     @EnvironmentObject var m: Model
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
-                Image(systemName: "arrow.triangle.2.circlepath.doc.on.clipboard")
-                    .font(.system(size: 40))
-                    .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Cara A terminada").font(.title2.bold())
-                    Text("Ahora da la vuelta a las hojas").foregroundStyle(.secondary)
+        Toggle("Doble cara manual", isOn: $m.duplex)
+        Group {
+            Toggle("Cara B en orden inverso", isOn: $m.reverseB)
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Girar cara B 180°", isOn: $m.rotateB)
+                if m.rotateB {
+                    Text("Las hojas se vuelven a meter tal cual salen, sin darles la vuelta.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Text(m.flipInstructions)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(4)
+            if !m.rotateB {
+                Picker("Volver a meter las hojas", selection: $m.faceDown) {
+                    Text("Cara impresa abajo").tag(true)
+                    Text("Cara impresa arriba").tag(false)
+                }
+            }
+            Toggle("Dorso en blanco si las páginas son impares", isOn: $m.padBlank)
+        }
+        .disabled(!m.duplex)
+    }
+}
+
+// MARK: Paneles de cada paso
+
+struct PrintingPanel: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        let sideB = m.phase == .printingB
+        VStack(spacing: 14) {
+            ProgressView().controlSize(.large)
+            Text(!m.effectiveDuplex ? "Imprimiendo…" : sideB ? "Imprimiendo la cara B…" : "Imprimiendo la cara A…")
+                .font(.title3.weight(.semibold))
+            Text(sideB ? "Ya casi está. Deja que la impresora termine."
+                 : m.effectiveDuplex ? "No toques las hojas hasta que la impresora pare.\nTe avisaré cuando haya que darles la vuelta."
+                 : "Deja que la impresora termine.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+    }
+}
+
+struct FlipPanel: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.uturn.down.circle.fill")
+                        .font(.system(size: 34))
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Cara A terminada").font(.title2.bold())
+                        Text(m.reinsertAsIs ? "Vuelve a meter las hojas tal cual salen" : "Ahora vuelve a meter las hojas").foregroundStyle(.secondary)
+                    }
+                }
+                FlipIllustration(asIs: m.reinsertAsIs, faceDown: m.faceDown)
+                FlipStepsList(steps: m.flipSteps)
+            }
+            .padding(20)
+        }
+    }
+}
+
+struct FlipStepsList: View {
+    let steps: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, text in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("\(i + 1)")
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .frame(width: 20, height: 20)
+                        .background(Circle().fill(Color.accentColor))
+                    Text(text).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
+struct DonePanel: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 54))
+                .foregroundStyle(.green)
+            Text("¡Listo!").font(.title.bold())
+            Text("«\(m.title)» ya está impreso\(m.effectiveDuplex ? " a doble cara" : "").\n\(m.summary)")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
             HStack {
+                Button("Abrir otro PDF…") { m.openPanel() }
+                Button("Imprimir otra vez") { m.reset() }
+            }
+            .padding(.top, 6)
+        }
+        .padding(24)
+    }
+}
+
+// MARK: Barra inferior
+
+struct ActionBar: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if m.phase == .idle, m.doc != nil {
+                Label(m.summary, systemImage: "doc.on.doc")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            switch m.phase {
+            case .waitingFlip:
                 Button("Cancelar", role: .cancel) { m.cancel() }
                     .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button {
-                    m.printSideB()
-                } label: {
-                    Text("Imprimir cara B").frame(minWidth: 140)
+                Button { m.printSideB() } label: {
+                    Text("Imprimir cara B").frame(minWidth: 120)
                 }
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
+            case .printingA, .printingB:
+                Button("Cancelar", role: .cancel) { m.cancel() }
+                    .keyboardShortcut(.cancelAction)
+            case .done:
+                Button { m.reset() } label: {
+                    Text("Hecho").frame(minWidth: 110)
+                }
+                .keyboardShortcut(.defaultAction)
+                .controlSize(.large)
+            case .idle, .failed:
+                // Sin atajo de Intro: así pulsar Intro en un campo nunca manda a imprimir
+                Button { m.start() } label: {
+                    Text(m.effectiveDuplex ? "Imprimir cara A" : "Imprimir").frame(minWidth: 110)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("p")
+                .controlSize(.large)
+                .disabled(!m.canPrint)
+                .help("Imprimir (⌘P)")
             }
         }
-        .padding(24)
-        .frame(width: 460)
+        .padding(14)
+    }
+}
+
+// MARK: - Ilustración: cómo volver a meter las hojas
+
+struct FlipIllustration: View {
+    /// true: el taco se mete tal cual sale (cara B girada 180°)
+    let asIs: Bool
+    let faceDown: Bool
+    @State private var feeding = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Group {
+                if asIs { asIsScene } else { feedScene }
+            }
+            .frame(maxWidth: .infinity)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) { feeding = true }
+            }
+            HStack(spacing: 16) {
+                if asIs {
+                    Label("Sin darles la vuelta", systemImage: "nosign")
+                    Label("Sin girarlas", systemImage: "nosign")
+                } else {
+                    Label("Cara impresa hacia \(faceDown ? "abajo" : "arriba")",
+                          systemImage: faceDown ? "arrow.down.to.line" : "arrow.up.to.line")
+                    Label("Lo de arriba entra primero", systemImage: "arrow.right.to.line")
+                }
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(asIs
+            ? "Mete las hojas en la bandeja de entrada tal cual salen, sin darles la vuelta ni girarlas"
+            : "Mete las hojas con la cara impresa hacia \(faceDown ? "abajo" : "arriba") y la parte de arriba entrando primero")
+    }
+
+    /// Bandeja de salida → bandeja de entrada, el taco se mueve sin cambiar
+    private var asIsScene: some View {
+        HStack(spacing: 0) {
+            TrayBox(title: "Bandeja de salida", icon: "tray.and.arrow.up")
+            Image(systemName: "arrow.right").font(.title2.weight(.semibold)).foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 4)
+            TrayBox(title: "Bandeja de entrada", icon: "tray.and.arrow.down")
+        }
+        .overlay {
+            StackGlyph()
+                .offset(x: feeding ? 92 : -92, y: -8)
+                .opacity(feeding ? 0.2 : 1)
+        }
+        .frame(height: 110)
+    }
+
+    private var feedScene: some View {
+        HStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.08))
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.secondary.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [4]))
+                PaperGlyph(faceDown: faceDown)
+                    .rotationEffect(.degrees(90))   // la parte de arriba mira a la impresora
+                    .offset(x: feeding ? 52 : -18)
+                    .opacity(feeding ? 0 : 1)
+            }
+            .frame(width: 170, height: 110)
+            .clipped()
+            Image(systemName: "printer.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct TrayBox: View {
+    let title: String
+    let icon: String
+    var body: some View {
+        VStack(spacing: 6) {
+            Spacer()
+            Label(title, systemImage: icon)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .frame(width: 140, height: 110)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(Color.secondary.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [4])))
+    }
+}
+
+/// Un taco de hojas tal cual sale de la impresora
+struct StackGlyph: View {
+    var body: some View {
+        ZStack {
+            ForEach(0..<3, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.white)
+                    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Color.black.opacity(0.15)))
+                    .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
+                    .frame(width: 46, height: 62)
+                    .offset(x: CGFloat(i) * 3, y: CGFloat(-i) * 3)
+            }
+        }
+    }
+}
+
+/// Una hoja vista desde arriba. Si la cara impresa va abajo, se ve el dorso en blanco.
+struct PaperGlyph: View {
+    let faceDown: Bool
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color.white)
+                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+            VStack(spacing: 4) {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.up")
+                    Text("ARRIBA")
+                }
+                .font(.system(size: 7, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+                .background(Color.accentColor)
+                if faceDown {
+                    Spacer()
+                    Text("dorso\nen blanco")
+                        .font(.system(size: 7))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.gray)
+                    Spacer()
+                } else {
+                    Text("A").font(.system(size: 16, weight: .bold)).foregroundStyle(.black.opacity(0.7))
+                    ForEach(0..<5, id: \.self) { _ in
+                        Capsule().fill(Color.black.opacity(0.18)).frame(height: 2).padding(.horizontal, 7)
+                    }
+                    Spacer()
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+        }
+        .frame(width: 58, height: 80)
+    }
+}
+
+// MARK: - Bienvenida
+
+struct WelcomeSheet: View {
+    @EnvironmentObject var m: Model
+    @Environment(\.dismiss) private var dismiss
+    @State private var page = 0
+    private let lastPage = 4
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                switch page {
+                case 0:
+                    WelcomePage(icon: "hand.wave.fill", title: "¡Bienvenido a Doble Cara M2022!",
+                                text: "Tu impresora no puede imprimir sola por las dos caras. Esta app te guía paso a paso para hacerlo a mano, sin equivocarte.")
+                case 1:
+                    WelcomePage(icon: "doc.badge.plus", title: "1. Abre un PDF",
+                                text: "Puedes hacerlo de tres maneras:") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Arrastra el PDF a la ventana de la app.", systemImage: "hand.draw")
+                            Label("En Finder: clic derecho → Abrir con → Doble Cara M2022.", systemImage: "folder")
+                            Label("Desde cualquier app: Archivo → Imprimir → menú «PDF» → «\(PDFMenu.name)».", systemImage: "printer")
+                        }
+                    }
+                case 2:
+                    WelcomePage(icon: "printer.fill", title: "2. Imprime la cara A",
+                                text: "Elige qué páginas quieres y pulsa «Imprimir cara A». Se imprimen las páginas 1, 3, 5… En la vista «Hojas» ves en qué hoja y cara saldrá cada página.")
+                case 3:
+                    WelcomePage(icon: "arrow.uturn.down.circle.fill", title: "3. Vuelve a meter las hojas",
+                                text: m.reinsertAsIs
+                                    ? "Cuando termine, la app te avisa. Recoge el taco y vuelve a meterlo tal cual sale: sin darle la vuelta ni girarlo."
+                                    : "Cuando termine, la app te avisa. Recoge el taco sin desordenarlo y vuelve a meterlo así:") {
+                        FlipIllustration(asIs: m.reinsertAsIs, faceDown: m.faceDown)
+                    }
+                default:
+                    WelcomePage(icon: "wand.and.stars", title: "4. Imprime la cara B… y listo",
+                                text: "Pulsa «Imprimir cara B» y se imprimen las páginas 2, 4, 6… por detrás.\n\nAntes de empezar te recomendamos calibrar la impresora: imprime 2 hojas de prueba y la app ajusta lo necesario.")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 36)
+            .padding(.top, 28)
+
+            HStack(spacing: 6) {
+                ForEach(0...lastPage, id: \.self) { i in
+                    Circle()
+                        .fill(i == page ? Color.accentColor : Color.secondary.opacity(0.3))
+                        .frame(width: 7, height: 7)
+                }
+            }
+            .padding(.bottom, 14)
+
+            Divider()
+            HStack {
+                if page == 0 {
+                    Button("Saltar") { dismiss() }
+                } else {
+                    Button("Atrás") { page -= 1 }
+                }
+                Spacer()
+                if page < lastPage {
+                    Button("Siguiente") { page += 1 }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Más tarde") { dismiss() }
+                    Button("Calibrar ahora") {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { m.presentCalibration() }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 540, height: 440)
+        .onDisappear { m.welcomeShown = true }
+    }
+}
+
+struct WelcomePage<Extra: View>: View {
+    let icon: String
+    let title: String
+    let text: String
+    @ViewBuilder var extra: () -> Extra
+
+    init(icon: String, title: String, text: String, @ViewBuilder extra: @escaping () -> Extra) {
+        self.icon = icon
+        self.title = title
+        self.text = text
+        self.extra = extra
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 44))
+                .foregroundStyle(Color.accentColor)
+            Text(title).font(.title2.bold()).multilineTextAlignment(.center)
+            Text(text)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            extra()
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+extension WelcomePage where Extra == EmptyView {
+    init(icon: String, title: String, text: String) {
+        self.init(icon: icon, title: title, text: text) { EmptyView() }
+    }
+}
+
+// MARK: - Calibración
+
+struct CalibrationSheet: View {
+    @EnvironmentObject var m: Model
+    @Environment(\.dismiss) private var dismiss
+
+    enum Step { case intro, printing, behind, direction, result }
+    @State private var step: Step = .intro
+    @State private var changes: [String] = []
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "wand.and.stars").font(.title2).foregroundStyle(Color.accentColor)
+                Text("Calibrar la impresora").font(.title3.bold())
+                Spacer()
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+            Divider()
+            ScrollView {
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(22)
+            }
+            Divider()
+            buttons.padding(16)
+        }
+        .frame(width: 540, height: 500)
+        .onChange(of: m.phase) { p in
+            if step == .printing && p == .done { step = .behind }
+        }
+        .onDisappear { m.endCalibration() }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch step {
+        case .intro:
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Vamos a imprimir 2 hojas de prueba (páginas 1 a 4) para comprobar que la cara B sale bien: en el orden correcto y en el mismo sentido que la cara A.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Label("Pon al menos 2 hojas de papel en la bandeja.", systemImage: "doc.on.doc")
+                Form { PrinterRows() }
+                    .formStyle(.grouped)
+                    .frame(height: 150)
+                    .scrollDisabled(true)
+            }
+        case .printing:
+            switch m.phase {
+            case .waitingFlip:
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Cara A de prueba terminada").font(.headline)
+                    FlipIllustration(asIs: m.reinsertAsIs, faceDown: m.faceDown)
+                    FlipStepsList(steps: m.flipSteps)
+                }
+            case .failed(let msg):
+                Label(msg, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            default:
+                VStack(spacing: 12) {
+                    ProgressView().controlSize(.large)
+                    Text(m.phase == .printingB ? "Imprimiendo la cara B de prueba…" : "Imprimiendo la cara A de prueba…")
+                        .font(.headline)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 60)
+            }
+        case .behind:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Coge la hoja que tiene la PÁGINA 1. ¿Qué hay por detrás?").font(.headline)
+                ChoiceButton(icon: "checkmark.circle", text: "La página 2") { step = .direction }
+                ChoiceButton(icon: "arrow.up.arrow.down", text: "La página 4") {
+                    m.reverseB.toggle()
+                    changes.append("Orden de la cara B: \(m.reverseB ? "inverso" : "normal").")
+                    step = .direction
+                }
+                ChoiceButton(icon: "square.on.square", text: "Nada: la cara B se imprimió encima de la cara A") {
+                    if m.reinsertAsIs {
+                        problem = "La cara B se imprimió por el mismo lado. Repite la prueba metiendo el taco exactamente como sale de la impresora, sin darle la vuelta ni girarlo."
+                    } else {
+                        m.faceDown.toggle()
+                        changes.append("Las hojas se meten con la cara impresa hacia \(m.faceDown ? "abajo" : "arriba").")
+                    }
+                    step = .result
+                }
+                ChoiceButton(icon: "xmark.circle", text: "La cara B no se imprimió") {
+                    problem = "La cara B no llegó a imprimirse. Comprueba que la impresora tiene papel y está encendida, y repite la prueba."
+                    step = .result
+                }
+            }
+        case .direction:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Gira la hoja como la página de un libro. ¿El número de detrás se lee bien, con «ARRIBA» en el mismo lado?")
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                ChoiceButton(icon: "checkmark.circle", text: "Sí, se lee bien") { step = .result }
+                ChoiceButton(icon: "arrow.uturn.down", text: "No, sale cabeza abajo") {
+                    m.rotateB.toggle()
+                    changes.append("Giro de la cara B: \(m.rotateB ? "180°" : "sin girar").")
+                    step = .result
+                }
+            }
+        case .result:
+            VStack(alignment: .leading, spacing: 12) {
+                if let problem {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                } else if changes.isEmpty {
+                    Label("¡Todo correcto! Tu impresora ya está lista para imprimir a doble cara.",
+                          systemImage: "checkmark.seal.fill")
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                } else {
+                    Text("He cambiado estos ajustes:").font(.headline)
+                    ForEach(changes, id: \.self) { Label($0, systemImage: "slider.horizontal.3") }
+                    Text("Te recomendamos repetir la prueba para confirmarlo.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var buttons: some View {
+        HStack {
+            Button("Cancelar", role: .cancel) { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Spacer()
+            switch step {
+            case .intro:
+                Button("Imprimir prueba") {
+                    m.beginCalibration()
+                    m.start()
+                    step = .printing
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(m.printer.isEmpty)
+            case .printing:
+                if m.phase == .waitingFlip {
+                    Button("Imprimir cara B") { m.printSideB() }
+                        .keyboardShortcut(.defaultAction)
+                } else if case .failed = m.phase {
+                    Button("Reintentar") { m.reset(); step = .intro }
+                        .keyboardShortcut(.defaultAction)
+                }
+            case .behind, .direction:
+                EmptyView()
+            case .result:
+                if problem != nil || !changes.isEmpty {
+                    Button("Repetir prueba") {
+                        changes = []
+                        problem = nil
+                        m.reset()
+                        step = .intro
+                    }
+                }
+                Button("Terminar") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+}
+
+struct ChoiceButton: View {
+    let icon: String
+    let text: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).frame(width: 20).foregroundStyle(Color.accentColor)
+                Text(text).multilineTextAlignment(.leading)
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Preferencias (⌘,)
+
+struct PreferencesView: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        Form {
+            Section("Impresora") { PrinterRows() }
+            Section("Doble cara") { DuplexRows() }
+            Section("Avisos e integración") {
+                Toggle("Avisarme con una notificación", isOn: $m.notify)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Mostrar en el menú «PDF» al imprimir", isOn: $m.pdfMenu)
+                    Text("En cualquier app: Archivo → Imprimir → menú «PDF» (abajo a la izquierda) → «\(PDFMenu.name)». El documento se abre aquí, listo para imprimir.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Section("Ayuda") {
+                Toggle("Mostrar «¿Es tu primera vez?»", isOn: $m.showFirstTime)
+                HStack {
+                    Button("Calibrar la impresora…") { m.presentCalibration() }
+                        .disabled(m.busy)
+                    Button("Ver la bienvenida") { m.presentWelcome() }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 480)
+        .frame(minHeight: 560)
     }
 }
