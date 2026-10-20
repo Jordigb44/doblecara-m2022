@@ -438,9 +438,14 @@ final class Model: ObservableObject {
         }
     }
 
-    /// Quita el documento actual y vacía la cola, dejando la app vacía.
-    func clearDocuments() {
+    /// Mueve a la Papelera el documento actual y los de la cola, y deja la app vacía.
+    func deleteDocuments() {
         guard !busy, !calibrating else { NSSound.beep(); return }
+        var files: [URL] = queue
+        if let u = url { files.insert(u, at: 0) }
+        for f in files {
+            try? FileManager.default.trashItem(at: f, resultingItemURL: nil)
+        }
         setDocument(nil, url: nil)
         queue = []
     }
@@ -1586,6 +1591,7 @@ struct PageThumb: View {
 struct SettingsForm: View {
     @EnvironmentObject var m: Model
     @AppStorage("advancedOpen") private var advancedOpen = false
+    @State private var confirmDelete = false
 
     var body: some View {
         Form {
@@ -1601,9 +1607,9 @@ struct SettingsForm: View {
                     Button { m.openPanel() } label: { Image(systemName: "folder") }
                         .buttonStyle(.borderless).help("Abrir otro PDF")
                     if m.doc != nil {
-                        Button { m.clearDocuments() } label: { Image(systemName: "trash") }
+                        Button { confirmDelete = true } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
-                            .help("Quitar el documento actual y la cola")
+                            .help("Mover el documento actual y la cola a la Papelera")
                     }
                 }
                 if m.printers.isEmpty {
@@ -1703,6 +1709,19 @@ struct SettingsForm: View {
             }
         }
         .formStyle(.grouped)
+        .alert("Mover a la Papelera", isPresented: $confirmDelete) {
+            Button("Mover a la Papelera", role: .destructive) { m.deleteDocuments() }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text(deleteMessage)
+        }
+    }
+
+    private var deleteMessage: String {
+        if m.queue.isEmpty {
+            return "«\(m.title)» se moverá a la Papelera."
+        }
+        return "«\(m.title)» y \(m.queue.count) documento(s) de la cola se moverán a la Papelera."
     }
 }
 
