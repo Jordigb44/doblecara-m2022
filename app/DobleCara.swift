@@ -9,6 +9,21 @@ import PDFKit
 import UniformTypeIdentifiers
 import UserNotifications
 
+/// Conjunto de ajustes de impresión guardados con un nombre
+struct PrintProfile: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var printer: String
+    var paper: String
+    var duplex: Bool
+    var reverseB: Bool
+    var rotateB: Bool
+    var padBlank: Bool
+    var fitToPage: Bool
+    var faceDown: Bool
+    var grayscale: Bool
+}
+
 // MARK: - App
 
 @main
@@ -229,6 +244,11 @@ final class Model: ObservableObject {
     @Published var jobsCount: Int { didSet { defaults.set(jobsCount, forKey: "jobsCount") } }
     @Published var sheetsSaved: Int { didSet { defaults.set(sheetsSaved, forKey: "sheetsSaved") } }
 
+    // Perfiles de impresión
+    @Published var profiles: [PrintProfile] = [] {
+        didSet { if let d = try? JSONEncoder().encode(profiles) { defaults.set(d, forKey: "profiles") } }
+    }
+
     // Ajustes por trabajo
     @Published var copies = 1
     @Published var pageMode: PageMode = .all {
@@ -276,6 +296,10 @@ final class Model: ObservableObject {
         welcomeShown = defaults.bool(forKey: "welcomeShown")
         jobsCount = defaults.integer(forKey: "jobsCount")
         sheetsSaved = defaults.integer(forKey: "sheetsSaved")
+        if let data = defaults.data(forKey: "profiles"),
+           let decoded = try? JSONDecoder().decode([PrintProfile].self, from: data) {
+            profiles = decoded
+        }
         // Activado por defecto: se crea (o se repara si la app cambió de sitio) al abrir la app,
         // salvo que el usuario lo haya quitado en Preferencias
         pdfMenu = defaults.bool(forKey: "pdfMenu")
@@ -603,6 +627,33 @@ final class Model: ObservableObject {
         if effectiveDuplex {
             sheetsSaved += max(0, selection.count * max(1, copies) - sheetCount)
         }
+    }
+
+    // MARK: Perfiles
+
+    func apply(_ p: PrintProfile) {
+        printer = p.printer
+        paper = p.paper
+        duplex = p.duplex
+        reverseB = p.reverseB
+        rotateB = p.rotateB
+        padBlank = p.padBlank
+        fitToPage = p.fitToPage
+        faceDown = p.faceDown
+        grayscale = p.grayscale
+    }
+
+    func saveProfile(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        profiles.append(PrintProfile(name: trimmed, printer: printer, paper: paper,
+                                     duplex: duplex, reverseB: reverseB, rotateB: rotateB,
+                                     padBlank: padBlank, fitToPage: fitToPage,
+                                     faceDown: faceDown, grayscale: grayscale))
+    }
+
+    func removeProfile(_ p: PrintProfile) {
+        profiles.removeAll { $0.id == p.id }
     }
 
     var flipSteps: [String] {
@@ -1835,6 +1886,8 @@ struct ChoiceButton: View {
 
 struct PreferencesView: View {
     @EnvironmentObject var m: Model
+    @State private var showingSaveAlert = false
+    @State private var newProfileName = ""
 
     var body: some View {
         Form {
@@ -1849,6 +1902,24 @@ struct PreferencesView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+            Section("Perfiles") {
+                if m.profiles.isEmpty {
+                    Text("No hay perfiles guardados.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(m.profiles) { p in
+                        HStack {
+                            Text(p.name).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button("Usar") { m.apply(p) }
+                            Button { m.removeProfile(p) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                Button("Guardar ajustes actuales…") { showingSaveAlert = true }
             }
             Section("Ayuda") {
                 Toggle("Mostrar «¿Es tu primera vez?»", isOn: $m.showFirstTime)
@@ -1866,5 +1937,13 @@ struct PreferencesView: View {
         .formStyle(.grouped)
         .frame(width: 480)
         .frame(minHeight: 560)
+        .alert("Nombre del perfil", isPresented: $showingSaveAlert) {
+            TextField("Nombre", text: $newProfileName)
+            Button("Guardar") {
+                m.saveProfile(newProfileName)
+                newProfileName = ""
+            }
+            Button("Cancelar", role: .cancel) { newProfileName = "" }
+        }
     }
 }
