@@ -14,7 +14,7 @@ if [ ! -f "$SRC/$NAME/Contents/document.wflow" ]; then
 fi
 
 mkdir -p "$DEST"
-rm -rf "$DEST/$NAME"
+rm -rf "${DEST:?}/${NAME}"
 cp -R "$SRC/$NAME" "$DEST/"
 
 LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
