@@ -251,6 +251,7 @@ final class Model: ObservableObject {
     // Ajustes por trabajo
     @Published var copies = 1
     @Published var booklet = false
+    @Published var pagesPerSheet = 1
     @Published var pageMode: PageMode = .all {
         didSet {
             // Al pasar a «Elegir» se parte de lo que ya estaba elegido
@@ -585,12 +586,71 @@ final class Model: ObservableObject {
         return file
     }
 
+    /// Genera el PDF con varias páginas por hoja (N-up: 2 o 4).
+    private func makeNUpPDF() -> URL? {
+        guard let doc else { return nil }
+        let sel = selection
+        guard !sel.isEmpty else { return nil }
+        let n = max(2, min(4, pagesPerSheet))
+        let cols = 2
+        let rows = n == 4 ? 2 : 1
+
+        func pageSize(_ i: Int) -> CGSize {
+            guard let p = doc.page(at: i) else { return CGSize(width: 595, height: 842) }
+            let b = p.bounds(for: .mediaBox)
+            return p.rotation % 180 == 0 ? b.size : CGSize(width: b.height, height: b.width)
+        }
+        let ref = pageSize(sel.first ?? 0)
+        let sheetSize = CGSize(width: ref.width * CGFloat(cols), height: ref.height * CGFloat(rows))
+        var box = CGRect(origin: .zero, size: sheetSize)
+        let dir = Self.workDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("\(title) - \(n)up.pdf")
+        try? FileManager.default.removeItem(at: file)
+        guard let ctx = CGContext(file as CFURL, mediaBox: &box, nil) else { return nil }
+
+        func drawBatch(_ batch: [Int]) {
+            ctx.beginPDFPage(nil)
+            for (s, idx) in batch.enumerated() {
+                let col = s % cols, row = s / cols
+                let cell = CGSize(width: ref.width, height: ref.height)
+                ctx.saveGState()
+                ctx.translateBy(x: CGFloat(col) * cell.width,
+                                y: sheetSize.height - CGFloat(row + 1) * cell.height)
+                if let page = doc.page(at: idx) {
+                    let sz = pageSize(idx)
+                    let scale = min(cell.width / sz.width, cell.height / sz.height)
+                    let dw = (cell.width - sz.width * scale) / 2
+                    let dh = (cell.height - sz.height * scale) / 2
+                    ctx.translateBy(x: dw, y: dh)
+                    ctx.scaleBy(x: scale, y: scale)
+                    page.draw(with: .mediaBox, to: ctx)
+                }
+                ctx.restoreGState()
+            }
+            ctx.endPDFPage()
+        }
+
+        var batch: [Int] = []
+        for i in sel {
+            batch.append(i)
+            if batch.count == n { drawBatch(batch); batch = [] }
+        }
+        if !batch.isEmpty { drawBatch(batch) }
+        ctx.closePDF()
+        return file
+    }
+
     // MARK: Impresión
 
     func start() {
         guard canPrint else { return }
         if booklet && effectiveDuplex {
             startBooklet()
+            return
+        }
+        if pagesPerSheet > 1 {
+            startNUp()
             return
         }
         if notify { Notifier.requestPermission() }
@@ -626,17 +686,38 @@ final class Model: ObservableObject {
 
     private func startBooklet() {
         if notify { Notifier.requestPermission() }
-        guard let bookletURL = makeBookletPDF(),
-              let bdoc = PDFDocument(url: bookletURL) else {
+        guard let pdf = makeBookletPDF() else {
             phase = .failed("No se pudo preparar el folleto.")
             return
         }
-        let sides = bdoc.pageCount
+        printDuplexPDF(pdf)
+    }
+
+    private func startNUp() {
+        if notify { Notifier.requestPermission() }
+        guard let pdf = makeNUpPDF() else {
+            phase = .failed("No se pudo preparar el documento.")
+            return
+        }
+        if effectiveDuplex {
+            printDuplexPDF(pdf)
+        } else {
+            sendSingleFile(pdf)
+        }
+    }
+
+    /// Imprime un PDF ya generado a doble cara (divide en caras A y B)
+    private func printDuplexPDF(_ pdf: URL) {
+        guard let pd = PDFDocument(url: pdf) else {
+            phase = .failed("No se pudo preparar el documento.")
+            return
+        }
+        let sides = pd.pageCount
         let odd = Array(stride(from: 0, to: sides, by: 2)).map { Optional($0) }
         var even = Array(stride(from: 1, to: sides, by: 2)).map { Optional($0) }
         if reverseB { even.reverse() }
-        guard let oddURL = makePDF(odd, rotate: false, name: "\(title) - folleto cara A.pdf", source: bdoc),
-              let evenURL = makePDF(even, rotate: rotateB, name: "\(title) - folleto cara B.pdf", source: bdoc) else {
+        guard let oddURL = makePDF(odd, rotate: false, name: "\(title) - cara A.pdf", source: pd),
+              let evenURL = makePDF(even, rotate: rotateB, name: "\(title) - cara B.pdf", source: pd) else {
             phase = .failed("No se pudieron preparar las páginas.")
             return
         }
@@ -650,6 +731,11 @@ final class Model: ObservableObject {
             phase = .failed("No se pudieron preparar las páginas.")
             return
         }
+        sendSingleFile(file)
+    }
+
+    /// Imprime un PDF ya generado a una sola cara (o sin dúplex)
+    private func sendSingleFile(_ file: URL) {
         let p = printer, paper = paper, fit = fitToPage, n = copies, t = title, g = grayscale
         phase = .printingA
         Task {
@@ -1430,6 +1516,11 @@ struct PrinterRows: View {
         .onChange(of: m.paper) { _ in m.autoPaper = false }
         Toggle("Ajustar a la página", isOn: $m.fitToPage)
         Toggle("Imprimir en grises", isOn: $m.grayscale)
+        Picker("Páginas por hoja", selection: $m.pagesPerSheet) {
+            Text("1").tag(1)
+            Text("2").tag(2)
+            Text("4").tag(4)
+        }
     }
 }
 
