@@ -250,6 +250,7 @@ final class Model: ObservableObject {
 
     // Ajustes por trabajo
     @Published var copies = 1
+    @Published var booklet = false
     @Published var pageMode: PageMode = .all {
         didSet {
             // Al pasar a «Elegir» se parte de lo que ya estaba elegido
@@ -463,7 +464,8 @@ final class Model: ObservableObject {
     }
 
     var sheetCount: Int {
-        effectiveDuplex ? (sequence().count + 1) / 2 : selection.count * max(1, copies)
+        if booklet && effectiveDuplex { return (selection.count + 3) / 4 }
+        return effectiveDuplex ? (sequence().count + 1) / 2 : selection.count * max(1, copies)
     }
 
     /// "8 páginas → 4 hojas"
@@ -471,6 +473,10 @@ final class Model: ObservableObject {
         let n = selection.count
         guard doc != nil else { return "" }
         guard n > 0 else { return "Ninguna página elegida" }
+        if booklet && effectiveDuplex {
+            let sheets = (n + 3) / 4
+            return "Folleto: \(PagePlan.plural(n, "página", "páginas")) → \(PagePlan.plural(sheets, "hoja", "hojas"))"
+        }
         let per = effectiveDuplex ? (n + 1) / 2 : n
         var s = "\(PagePlan.plural(n, "página", "páginas")) → \(PagePlan.plural(per, "hoja", "hojas"))"
         if copies > 1 { s += " × \(copies) copias = \(PagePlan.plural(sheetCount, "hoja", "hojas"))" }
@@ -491,8 +497,8 @@ final class Model: ObservableObject {
         }
     }
 
-    private func makePDF(_ indices: [Int?], rotate: Bool, name: String) -> URL? {
-        guard let doc else { return nil }
+    private func makePDF(_ indices: [Int?], rotate: Bool, name: String, source: PDFDocument? = nil) -> URL? {
+        guard let src = source ?? doc else { return nil }
         let dir = Self.workDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent(name)
@@ -504,14 +510,15 @@ final class Model: ObservableObject {
             let b = page.bounds(for: .mediaBox)
             return page.rotation % 180 == 0 ? b.size : CGSize(width: b.height, height: b.width)
         }
-        let refSize = size(of: doc.page(at: selection.last ?? 0))
+        let refIndex = indices.compactMap { $0 }.last ?? 0
+        let refSize = size(of: src.page(at: refIndex))
         var box = CGRect(origin: .zero, size: refSize)
         guard let ctx = CGContext(file as CFURL, mediaBox: &box, nil) else { return nil }
 
         // Se redibuja cada página en un PDF nuevo. El giro de 180° se dibuja dentro
         // de la página (el sistema de impresión ignora la marca /Rotate de 180°).
         for i in indices {
-            let page = i.flatMap { doc.page(at: $0) }
+            let page = i.flatMap { src.page(at: $0) }
             var media = CGRect(origin: .zero, size: page == nil ? refSize : size(of: page))
             let info = [kCGPDFContextMediaBox as String: Data(bytes: &media, count: MemoryLayout<CGRect>.size)] as CFDictionary
             ctx.beginPDFPage(info)
@@ -530,10 +537,62 @@ final class Model: ObservableObject {
         return file
     }
 
+    /// Genera el PDF del folleto: 2 páginas por cara, en orden de imposición.
+    private func makeBookletPDF() -> URL? {
+        guard let doc else { return nil }
+        let sel = selection
+        guard !sel.isEmpty else { return nil }
+        let order = PagePlan.bookletOrder(pageCount: sel.count)
+        func pageSize(_ slot: Int?) -> CGSize {
+            guard let slot, let p = doc.page(at: sel[slot]) else { return CGSize(width: 595, height: 842) }
+            let b = p.bounds(for: .mediaBox)
+            return p.rotation % 180 == 0 ? b.size : CGSize(width: b.height, height: b.width)
+        }
+        let ref = pageSize(order.first ?? nil)
+        let sideSize = CGSize(width: ref.width * 2, height: ref.height)
+        var box = CGRect(origin: .zero, size: sideSize)
+        let dir = Self.workDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("\(title) - folleto.pdf")
+        try? FileManager.default.removeItem(at: file)
+        guard let ctx = CGContext(file as CFURL, mediaBox: &box, nil) else { return nil }
+
+        var side: [Int?] = []
+        for (k, slot) in order.enumerated() {
+            side.append(slot)
+            if k % 2 == 1 {
+                ctx.beginPDFPage(nil)
+                for (s, si) in side.enumerated() {
+                    let half = CGSize(width: ref.width, height: ref.height)
+                    ctx.saveGState()
+                    ctx.translateBy(x: CGFloat(s) * half.width, y: 0)
+                    if let si, let page = doc.page(at: sel[si]) {
+                        let sz = pageSize(si)
+                        let scale = min(half.width / sz.width, half.height / sz.height)
+                        let dw = (half.width - sz.width * scale) / 2
+                        let dh = (half.height - sz.height * scale) / 2
+                        ctx.translateBy(x: dw, y: dh)
+                        ctx.scaleBy(x: scale, y: scale)
+                        page.draw(with: .mediaBox, to: ctx)
+                    }
+                    ctx.restoreGState()
+                }
+                ctx.endPDFPage()
+                side = []
+            }
+        }
+        ctx.closePDF()
+        return file
+    }
+
     // MARK: Impresión
 
     func start() {
         guard canPrint else { return }
+        if booklet && effectiveDuplex {
+            startBooklet()
+            return
+        }
         if notify { Notifier.requestPermission() }
         let seq = sequence()
         if !effectiveDuplex || seq.count <= 1 {
@@ -563,6 +622,27 @@ final class Model: ObservableObject {
         }
         guard phase == .waitingFlip else { return }
         send(evenFile, suffix: "cara B", printing: .printingB, next: .done)
+    }
+
+    private func startBooklet() {
+        if notify { Notifier.requestPermission() }
+        guard let bookletURL = makeBookletPDF(),
+              let bdoc = PDFDocument(url: bookletURL) else {
+            phase = .failed("No se pudo preparar el folleto.")
+            return
+        }
+        let sides = bdoc.pageCount
+        let odd = Array(stride(from: 0, to: sides, by: 2)).map { Optional($0) }
+        var even = Array(stride(from: 1, to: sides, by: 2)).map { Optional($0) }
+        if reverseB { even.reverse() }
+        guard let oddURL = makePDF(odd, rotate: false, name: "\(title) - folleto cara A.pdf", source: bdoc),
+              let evenURL = makePDF(even, rotate: rotateB, name: "\(title) - folleto cara B.pdf", source: bdoc) else {
+            phase = .failed("No se pudieron preparar las páginas.")
+            return
+        }
+        evenFile = evenURL
+        sheetsInfo = ""
+        send(oddURL, suffix: "cara A", printing: .printingA, next: .waitingFlip)
     }
 
     private func printSingle() {
@@ -1358,6 +1438,8 @@ struct DuplexRows: View {
 
     var body: some View {
         Toggle("Doble cara manual", isOn: $m.duplex)
+        Toggle("Folleto (2 páginas por hoja)", isOn: $m.booklet)
+            .disabled(!m.duplex)
         Group {
             Toggle("Cara B en orden inverso", isOn: $m.reverseB)
             VStack(alignment: .leading, spacing: 2) {
@@ -1375,7 +1457,7 @@ struct DuplexRows: View {
             }
             Toggle("Dorso en blanco si las páginas son impares", isOn: $m.padBlank)
         }
-        .disabled(!m.duplex)
+        .disabled(!m.duplex || m.booklet)
     }
 }
 
