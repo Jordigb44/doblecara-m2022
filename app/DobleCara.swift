@@ -169,8 +169,6 @@ enum Phase: Equatable {
     case failed(String)
 }
 
-enum PageMode: String { case all, range, custom }
-
 @MainActor
 final class Model: ObservableObject {
     static let shared = Model()
@@ -209,7 +207,8 @@ final class Model: ObservableObject {
         didSet {
             // Al pasar a «Elegir» se parte de lo que ya estaba elegido
             if pageMode == .custom && oldValue != .custom {
-                customPages = Self.format(selection(for: oldValue))
+                customPages = PagePlan.format(PagePlan.selection(mode: oldValue, pageCount: pageCount,
+                                                                from: fromPage, to: toPage, custom: customPages))
             }
         }
     }
@@ -318,50 +317,8 @@ final class Model: ObservableObject {
     // MARK: Páginas
 
     /// Páginas elegidas (índices desde 0)
-    var selection: [Int] { selection(for: pageMode) }
-
-    private func selection(for mode: PageMode) -> [Int] {
-        guard pageCount > 0 else { return [] }
-        switch mode {
-        case .all:
-            return Array(0..<pageCount)
-        case .range:
-            let a = max(1, min(fromPage, pageCount)), b = max(a, min(toPage, pageCount))
-            return Array((a - 1)...(b - 1))
-        case .custom:
-            return Self.parse(customPages, pageCount: pageCount)
-        }
-    }
-
-    /// "1-3, 5, 8-" → [0, 1, 2, 4, 7, 8, …]
-    static func parse(_ text: String, pageCount n: Int) -> [Int] {
-        var set = Set<Int>()
-        for part in text.split(whereSeparator: { $0 == "," || $0 == ";" }) {
-            let bits = part.split(separator: "-", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-            if bits.count == 1, let v = Int(bits[0]), (1...n).contains(v) {
-                set.insert(v - 1)
-            } else if bits.count == 2 {
-                let a = Int(bits[0]) ?? 1, b = Int(bits[1]) ?? n
-                let lo = max(1, min(a, b)), hi = min(n, max(a, b))
-                if lo <= hi { for v in lo...hi { set.insert(v - 1) } }
-            }
-        }
-        return set.sorted()
-    }
-
-    /// [0, 1, 2, 4] → "1-3, 5"
-    static func format(_ indices: [Int]) -> String {
-        var parts: [String] = []
-        var i = 0
-        let s = indices.sorted()
-        while i < s.count {
-            var j = i
-            while j + 1 < s.count && s[j + 1] == s[j] + 1 { j += 1 }
-            parts.append(i == j ? "\(s[i] + 1)" : "\(s[i] + 1)-\(s[j] + 1)")
-            i = j + 1
-        }
-        return parts.joined(separator: ", ")
+    var selection: [Int] {
+        PagePlan.selection(mode: pageMode, pageCount: pageCount, from: fromPage, to: toPage, custom: customPages)
     }
 
     func togglePage(_ i: Int) {
@@ -369,30 +326,17 @@ final class Model: ObservableObject {
         var set = Set(selection)
         if set.contains(i) { set.remove(i) } else { set.insert(i) }
         pageMode = .custom
-        customPages = Self.format(Array(set))
+        customPages = PagePlan.format(Array(set))
     }
 
     /// Hoja y cara en la que sale cada página (solo la primera copia)
-    struct Slot { let sheet: Int; let sideB: Bool }
-
-    var sheetPlan: [Int: Slot] {
-        var plan: [Int: Slot] = [:]
-        for (k, p) in selection.enumerated() {
-            plan[p] = effectiveDuplex ? Slot(sheet: k / 2 + 1, sideB: k % 2 == 1) : Slot(sheet: k + 1, sideB: false)
-        }
-        return plan
+    var sheetPlan: [Int: PagePlan.Slot] {
+        PagePlan.sheetPlan(selection: selection, duplex: effectiveDuplex)
     }
 
     /// Secuencia completa (con copias); nil = página en blanco
     private func sequence() -> [Int?] {
-        let sel = selection
-        var seq: [Int?] = []
-        for c in 0..<max(1, copies) {
-            seq += sel.map { Optional($0) }
-            // Cada copia empieza en hoja nueva
-            if sel.count % 2 == 1 && (c < copies - 1 || padBlank) { seq.append(nil) }
-        }
-        return seq
+        PagePlan.sequence(selection: selection, copies: copies, padBlank: padBlank)
     }
 
     var sheetCount: Int {
@@ -405,12 +349,10 @@ final class Model: ObservableObject {
         guard doc != nil else { return "" }
         guard n > 0 else { return "Ninguna página elegida" }
         let per = effectiveDuplex ? (n + 1) / 2 : n
-        var s = "\(Self.plural(n, "página", "páginas")) → \(Self.plural(per, "hoja", "hojas"))"
-        if copies > 1 { s += " × \(copies) copias = \(Self.plural(sheetCount, "hoja", "hojas"))" }
+        var s = "\(PagePlan.plural(n, "página", "páginas")) → \(PagePlan.plural(per, "hoja", "hojas"))"
+        if copies > 1 { s += " × \(copies) copias = \(PagePlan.plural(sheetCount, "hoja", "hojas"))" }
         return s
     }
-
-    static func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
 
     /// Paso actual de la barra de pasos
     var currentStep: Int {
@@ -528,8 +470,8 @@ final class Model: ObservableObject {
                 if notify {
                     Notifier.post("Cara A terminada",
                                   reinsertAsIs
-                                      ? "Vuelve a meter \(Self.plural(sheetCount, "la hoja", "las hojas")) tal cual salen, sin darles la vuelta, y pulsa «Imprimir cara B»."
-                                      : "Vuelve a meter \(Self.plural(sheetCount, "la hoja", "las hojas")) y pulsa «Imprimir cara B».")
+                                      ? "Vuelve a meter \(PagePlan.plural(sheetCount, "la hoja", "las hojas")) tal cual salen, sin darles la vuelta, y pulsa «Imprimir cara B»."
+                                      : "Vuelve a meter \(PagePlan.plural(sheetCount, "la hoja", "las hojas")) y pulsa «Imprimir cara B».")
                 }
                 NSApp.activate(ignoringOtherApps: true)
                 NSApp.requestUserAttention(.criticalRequest)
@@ -566,7 +508,7 @@ final class Model: ObservableObject {
     func reset() { phase = .idle }
 
     var flipSteps: [String] {
-        let take = "Espera a que la impresora pare y recoge \(Self.plural(sheetCount, "la hoja", "las hojas")) de la bandeja de salida."
+        let take = "Espera a que la impresora pare y recoge \(PagePlan.plural(sheetCount, "la hoja", "las hojas")) de la bandeja de salida."
         var s: [String]
         if reinsertAsIs {
             // La cara B ya va girada 180°: no hay que voltear ni girar el taco
@@ -984,7 +926,7 @@ struct LegendSwatch: View {
 struct PageThumb: View {
     @EnvironmentObject var m: Model
     let index: Int
-    let slot: Model.Slot?
+    let slot: PagePlan.Slot?
     let duplex: Bool
 
     private var tint: Color { slot?.sideB == true ? .orange : .accentColor }
@@ -1041,7 +983,7 @@ struct SettingsForm: View {
                         .lineLimit(1).truncationMode(.middle)
                     Spacer()
                     if m.doc != nil {
-                        Text(Model.plural(m.pageCount, "pág.", "pág.")).foregroundStyle(.secondary)
+                        Text(PagePlan.plural(m.pageCount, "pág.", "pág.")).foregroundStyle(.secondary)
                     }
                     Button { m.openPanel() } label: { Image(systemName: "folder") }
                         .buttonStyle(.borderless).help("Abrir otro PDF")
