@@ -3,10 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "DobleCaraM2022",
+    defaultLocalization: "es",
     targets: [
         .target(
             name: "PagePlan",
             path: "app",
+            exclude: ["Resources"],
             sources: ["PagePlan.swift"]
         ),
         .testTarget(
