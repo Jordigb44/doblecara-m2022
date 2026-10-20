@@ -314,7 +314,13 @@ final class Model: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.pdf]
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let u = panel.url { load(u) }
+        if let dir = defaults.string(forKey: "lastDir"), !dir.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: dir)
+        }
+        if panel.runModal() == .OK, let u = panel.url {
+            defaults.set(u.deletingLastPathComponent().path, forKey: "lastDir")
+            load(u)
+        }
     }
 
     func thumbnail(_ i: Int) -> NSImage? {
