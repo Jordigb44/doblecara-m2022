@@ -15,7 +15,7 @@ SDK="$(xcrun --sdk macosx --show-sdk-path)"
 "$SWIFTC" -O -swift-version 5 -parse-as-library -sdk "$SDK" \
   -target "$(uname -m)-apple-macos13.0" \
   -framework SwiftUI -framework AppKit -framework PDFKit -framework UniformTypeIdentifiers -framework UserNotifications \
-  "$HERE/DobleCara.swift" -o "$BUILD/DobleCara"
+  "$HERE/DobleCara.swift" "$HERE/PagePlan.swift" -o "$BUILD/DobleCara"
 
 echo "→ Creando $APP"
 pkill -f "Doble Cara M2022.app/Contents/MacOS" 2>/dev/null || true
