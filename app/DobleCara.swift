@@ -22,6 +22,7 @@ struct PrintProfile: Codable, Identifiable, Equatable {
     var fitToPage: Bool
     var faceDown: Bool
     var grayscale: Bool
+    var margin: Double
 }
 
 // MARK: - App
@@ -225,6 +226,8 @@ final class Model: ObservableObject {
     @Published var padBlank: Bool { didSet { defaults.set(padBlank, forKey: "padBlank") } }
     @Published var fitToPage: Bool { didSet { defaults.set(fitToPage, forKey: "fitToPage") } }
     @Published var grayscale: Bool { didSet { defaults.set(grayscale, forKey: "grayscale") } }
+    /// Margen en milímetros alrededor del contenido de cada hoja
+    @Published var margin: Double { didSet { defaults.set(margin, forKey: "margin") } }
     /// Cómo se vuelven a meter las hojas: cara impresa hacia abajo (true) o hacia arriba
     @Published var faceDown: Bool { didSet { defaults.set(faceDown, forKey: "faceDown") } }
     /// Con el giro de 180° de la cara B, el taco se vuelve a meter tal cual sale de la impresora
@@ -279,7 +282,7 @@ final class Model: ObservableObject {
     private init() {
         defaults.register(defaults: ["paper": "A4", "duplex": true, "reverseB": true,
                                      "rotateB": true, "padBlank": true, "fitToPage": false,
-                                     "grayscale": false,
+                                     "grayscale": false, "margin": 0.0,
                                      "faceDown": true, "showFirstTime": true, "notify": true,
                                      "welcomeShown": false, "pdfMenu": true])
         printer = defaults.string(forKey: "printer") ?? ""
@@ -291,6 +294,7 @@ final class Model: ObservableObject {
         padBlank = defaults.bool(forKey: "padBlank")
         fitToPage = defaults.bool(forKey: "fitToPage")
         grayscale = defaults.bool(forKey: "grayscale")
+        margin = defaults.double(forKey: "margin")
         faceDown = defaults.bool(forKey: "faceDown")
         showFirstTime = defaults.bool(forKey: "showFirstTime")
         notify = defaults.bool(forKey: "notify")
@@ -320,6 +324,9 @@ final class Model: ObservableObject {
         if case .failed = phase { return true }
         return false
     }
+
+    /// Margen en puntos (72 pt = 25,4 mm)
+    var marginPoints: CGFloat { CGFloat(margin) * 72.0 / 25.4 }
 
     static func displayName(_ printer: String) -> String { printer.replacingOccurrences(of: "_", with: " ") }
 
@@ -532,6 +539,17 @@ final class Model: ObservableObject {
             ctx.beginPDFPage(info)
             if let page {
                 ctx.saveGState()
+                let inset = marginPoints
+                if inset > 0 {
+                    let scale = min((media.width - 2 * inset) / media.width,
+                                    (media.height - 2 * inset) / media.height)
+                    if scale > 0 {
+                        let dw = (media.width - media.width * scale) / 2
+                        let dh = (media.height - media.height * scale) / 2
+                        ctx.translateBy(x: dw, y: dh)
+                        ctx.scaleBy(x: scale, y: scale)
+                    }
+                }
                 if rotate {
                     ctx.translateBy(x: media.width, y: media.height)
                     ctx.rotate(by: .pi)
@@ -836,6 +854,7 @@ final class Model: ObservableObject {
         fitToPage = p.fitToPage
         faceDown = p.faceDown
         grayscale = p.grayscale
+        margin = p.margin
     }
 
     func saveProfile(_ name: String) {
@@ -844,7 +863,7 @@ final class Model: ObservableObject {
         profiles.append(PrintProfile(name: trimmed, printer: printer, paper: paper,
                                      duplex: duplex, reverseB: reverseB, rotateB: rotateB,
                                      padBlank: padBlank, fitToPage: fitToPage,
-                                     faceDown: faceDown, grayscale: grayscale))
+                                     faceDown: faceDown, grayscale: grayscale, margin: margin))
     }
 
     func removeProfile(_ p: PrintProfile) {
@@ -1705,6 +1724,9 @@ struct PrinterRows: View {
         .onChange(of: m.paper) { _ in m.autoPaper = false }
         Toggle("Ajustar a la página", isOn: $m.fitToPage)
         Toggle("Imprimir en grises", isOn: $m.grayscale)
+        Stepper(value: $m.margin, in: 0...50, step: 1) {
+            Text("Margen: \(Int(m.margin)) mm")
+        }
         Picker("Páginas por hoja", selection: $m.pagesPerSheet) {
             Text("1").tag(1)
             Text("2").tag(2)
