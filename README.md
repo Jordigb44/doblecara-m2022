@@ -65,6 +65,9 @@ Instala la app en `~/Applications/Doble Cara M2022.app` y el comando
   activado por defecto; se quita en *Preferencias* (⌘,).
 - **Finder:** clic derecho en un PDF → *Abrir con* → **Doble Cara M2022**.
 - **Arrastrar** el PDF a la ventana de la app o a su icono del Dock.
+- **Acción rápida de Finder:** clic derecho en un PDF → *Acciones rápidas* →
+  **Imprimir a doble cara**. Se instala con `integracion/instalar-accion-rapida.sh`
+  (y se activa en *Ajustes → Teclado → Funciones rápidas → Finder*).
 
 La ventana te guía en cuatro pasos: **Documento → Cara A → Meter hojas → Cara B**.
 
