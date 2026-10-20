@@ -858,6 +858,8 @@ struct PDFPreview: NSViewRepresentable {
     let doc: PDFDocument?
     /// Página que se ve (desde 1). Cambia al desplazarse y, al cambiarla, la vista salta a ella.
     @Binding var page: Int
+    /// Factor de zoom (0 = ajustar al ancho)
+    @Binding var zoom: CGFloat
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -876,6 +878,12 @@ struct PDFPreview: NSViewRepresentable {
     func updateNSView(_ v: PDFView, context: Context) {
         context.coordinator.parent = self
         if v.document !== doc { v.document = doc }
+        if zoom == 0 {
+            if !v.autoScales { v.autoScales = true }
+        } else {
+            if v.autoScales { v.autoScales = false }
+            if v.scaleFactor != zoom { v.scaleFactor = zoom }
+        }
         guard let doc, let current = v.currentPage else { return }
         if doc.index(for: current) + 1 != page, let target = doc.page(at: page - 1) {
             v.go(to: target)
@@ -954,6 +962,7 @@ struct PreviewPane: View {
     @Binding var showPages: Bool
     @State private var dropTargeted = false
     @State private var page = 1
+    @State private var zoom: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -980,11 +989,27 @@ struct PreviewPane: View {
                     if showPages {
                         PagesGrid()
                     } else {
-                        PDFPreview(doc: m.doc, page: $page)
+                        PDFPreview(doc: m.doc, page: $page, zoom: $zoom)
                         Divider()
-                        PageNavigator(page: $page, count: m.pageCount)
-                            .padding(.vertical, 6)
-                            .frame(maxWidth: .infinity)
+                        HStack {
+                            Button { zoom = max(0.25, (zoom == 0 ? 1 : zoom) / 1.25) } label: {
+                                Image(systemName: "minus.magnifyingglass")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reducir")
+                            Button("Ajustar") { zoom = 0 }
+                                .buttonStyle(.borderless)
+                                .help("Ajustar al ancho")
+                            Button { zoom = min(8, (zoom == 0 ? 1 : zoom) * 1.25) } label: {
+                                Image(systemName: "plus.magnifyingglass")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Ampliar")
+                            Spacer()
+                            PageNavigator(page: $page, count: m.pageCount)
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
                     }
                 }
             } else {
