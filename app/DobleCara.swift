@@ -450,6 +450,14 @@ final class Model: ObservableObject {
         queue = []
     }
 
+    /// Quita el documento de la vista (sin borrar el archivo) y vacía la cola,
+    /// como si se cerrara y volviera a abrir la app.
+    func clearDocuments() {
+        guard !busy, !calibrating else { NSSound.beep(); return }
+        setDocument(nil, url: nil)
+        queue = []
+    }
+
     func thumbnail(_ i: Int) -> NSImage? {
         if let t = thumbs[i] { return t }
         guard let page = doc?.page(at: i) else { return nil }
@@ -1607,6 +1615,12 @@ struct SettingsForm: View {
                     Button { m.openPanel() } label: { Image(systemName: "folder") }
                         .buttonStyle(.borderless).help("Abrir otro PDF")
                     if m.doc != nil {
+                        Button { m.clearDocuments() } label: {
+                            Label("Quitar", systemImage: "xmark.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .help("Quitar el documento de la vista (sin borrar el archivo)")
                         Button(role: .destructive) { confirmDelete = true } label: {
                             Label("Eliminar", systemImage: "trash")
                         }
