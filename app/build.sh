@@ -23,6 +23,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/DobleCara" "$APP/Contents/MacOS/"
 cp "$HERE/Info.plist" "$APP/Contents/"
+[ -d "$HERE/Resources" ] && cp -R "$HERE/Resources/." "$APP/Contents/Resources/" || true
 if xcrun --sdk macosx swift "$HERE/make_icon.swift" "$BUILD/AppIcon.iconset" >/dev/null 2>&1; then
   iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns" || true
 fi
