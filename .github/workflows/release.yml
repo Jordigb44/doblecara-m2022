@@ -1,0 +1,48 @@
+name: Release
+
+# Calcula la próxima versión siguiendo SemVer (según los commits feat:/fix:/
+# breaking) y crea el tag vX.Y.Z. El workflow build.yml (en push de tag v*)
+# se encarga de compilar la app y publicar la release con los adjuntos.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Tipo de bump (vacío = automático según commits)'
+        required: false
+        default: ''
+        type: choice
+        options: ['', major, minor, patch]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    # Evita bucles: si el commit ya es un bump de versión no hay nada que hacer
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, 'chore: bump')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump de versión (SemVer) y publicar
+        env:
+          BUMP_INPUT: ${{ github.event.inputs.bump }}
+        run: |
+          if [ -n "$BUMP_INPUT" ]; then
+            ./scripts/bump-version.sh "--$BUMP_INPUT" --push
+          else
+            ./scripts/bump-version.sh --push
+          fi
