@@ -289,6 +289,12 @@ final class Model: ObservableObject {
     /// La calibración siempre se hace a doble cara
     var effectiveDuplex: Bool { duplex || calibrating }
     var canPrint: Bool { doc != nil && !printer.isEmpty && !busy && !selection.isEmpty }
+    /// Hay una cara B ya preparada y la impresión falló: se puede reintentar sin repetir la cara A
+    var canReprintB: Bool {
+        guard evenFile != nil else { return false }
+        if case .failed = phase { return true }
+        return false
+    }
 
     static func displayName(_ printer: String) -> String { printer.replacingOccurrences(of: "_", with: " ") }
 
@@ -306,6 +312,13 @@ final class Model: ObservableObject {
             abs(w - s.1.width) < 3 && abs(h - s.1.height) < 3
                 || abs(w - s.1.height) < 3 && abs(h - s.1.width) < 3
         }?.0
+    }
+
+    /// Carpeta persistente para los PDFs generados (cara A/B, hoja de prueba).
+    /// Se usa en vez de la carpeta temporal para poder reimprimir la cara B.
+    static var workDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DobleCaraM2022", isDirectory: true)
     }
 
     func refreshPrinters() {
@@ -346,6 +359,7 @@ final class Model: ObservableObject {
         customPages = ""
         copies = 1
         phase = .idle
+        evenFile = nil
         if autoPaper, let first = d?.page(at: 0) {
             let b = first.bounds(for: .mediaBox)
             let size = first.rotation % 180 == 0 ? b.size : CGSize(width: b.height, height: b.width)
@@ -434,7 +448,7 @@ final class Model: ObservableObject {
 
     private func makePDF(_ indices: [Int?], rotate: Bool, name: String) -> URL? {
         guard let doc else { return nil }
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("DobleCaraM2022", isDirectory: true)
+        let dir = Self.workDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent(name)
         try? FileManager.default.removeItem(at: file)
@@ -498,7 +512,11 @@ final class Model: ObservableObject {
     }
 
     func printSideB() {
-        guard phase == .waitingFlip, let evenFile else { return }
+        guard let evenFile else { return }
+        if case .failed = phase {
+            phase = .waitingFlip  // reintento desde un fallo
+        }
+        guard phase == .waitingFlip else { return }
         send(evenFile, suffix: "cara B", printing: .printingB, next: .done)
     }
 
@@ -646,7 +664,7 @@ final class Model: ObservableObject {
 
     /// Crea un PDF de prueba. 1 hoja = páginas 1-2; 2 hojas = páginas 1-4 (comprueba también el orden).
     func loadTestPage(sheets: Int = 1) {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("DobleCaraM2022", isDirectory: true)
+        let dir = Self.workDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("Hoja de prueba doble cara.pdf")
         var box = CGRect(x: 0, y: 0, width: 595, height: 842)
@@ -1344,6 +1362,11 @@ struct ActionBar: View {
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
             case .idle, .failed:
+                if m.canReprintB {
+                    Button { m.printSideB() } label: {
+                        Label("Reimprimir cara B", systemImage: "arrow.clockwise")
+                    }
+                }
                 // Sin atajo de Intro: así pulsar Intro en un campo nunca manda a imprimir
                 Button { m.start() } label: {
                     Text(m.effectiveDuplex ? "Imprimir cara A" : "Imprimir").frame(minWidth: 110)
