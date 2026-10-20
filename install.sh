@@ -44,7 +44,7 @@ EOF
 fi
 
 # El servicio antiguo (script) bloqueaba Vista Previa en macOS 27: se quita
-rm -rf "$PDFSERV/${SERVICE_NAME}" "$PDFSERV/${SERVICE_NAME}.app"
+rm -rf "${PDFSERV:?}/${SERVICE_NAME}" "${PDFSERV:?}/${SERVICE_NAME}.app"
 # En su lugar, el menú PDF abre la app directamente (se puede quitar en Preferencias)
 mkdir -p "$PDFSERV"
 ln -sfn "${APP}" "$PDFSERV/Doble cara manual (M2022)"
