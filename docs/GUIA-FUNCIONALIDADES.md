@@ -571,6 +571,55 @@ if grayscale { args += ["-o", "ColorModel=Gray"] }
 
 ---
 
+## 16. Actualizaciones automáticas (GitHub)
+
+**Objetivo:** que la app se actualice sola desde la última release pública del
+repo `Jordigb44/doblecara-m2022`.
+
+### 16.1 Comprobación
+
+`app/UpdateChecker.swift` consulta
+`https://api.github.com/repos/Jordigb44/doblecara-m2022/releases/latest`,
+decodifica el JSON (`GitHubRelease`) y compara el `tag_name` (sin la «v») con
+`CFBundleShortVersionString` mediante `UpdateChecker.isNewer` (SemVer, campos
+faltantes = 0). Si la release es más nueva, se muestra una alerta con las
+novedades (`release.body`).
+
+- **Automática:** al abrir la app (`AppDelegate.applicationDidFinishLaunching`),
+  como mucho una vez cada 12 h (clave `lastUpdateCheck`). Se puede desactivar
+  en Ajustes → Actualizaciones (clave `autoUpdate`, activada por defecto).
+- **Manual:** menú Ayuda → «Buscar actualizaciones…», o botón en Ajustes.
+
+### 16.2 Instalación
+
+`UpdateInstaller.stage` descarga el `.zip` de la release a un directorio
+temporal, **verifica su SHA256** contra el `SHA256SUMS.txt` publicado en la
+misma release (si existe), descomprime con `ditto` y genera un script que:
+
+1. espera a que la app actual termine (`kill -0 <pid>`);
+2. renombra el bundle viejo a `.old`, mueve el nuevo y borra el viejo;
+3. elimina el atributo `com.apple.quarantine`;
+4. relanza la app con `open`.
+
+La app se cierra sola tras lanzar el script (`NSApp.terminate`). Si la app no
+vive dentro de un `.app` (p. ej. binario suelto) el destino es
+`~/Applications/Doble Cara M2022.app`; si el directorio no es escribible, se
+devuelve un error claro.
+
+### 16.3 Código
+
+- `app/UpdateChecker.swift`: `GitHubRelease`, `UpdateChecker` (comprobación),
+  `UpdateInstaller` (descarga/instalación). Lógica pura testeable.
+- `Model`: `checkForUpdates(interactive:)`, `installUpdate()`,
+  `autoCheckForUpdates()`, estados `updateRelease`/`updateChecking`/
+  `updateInstalling`/`updateNote`/`autoUpdate`.
+- UI: `UpdateSheet` (notas de la release + botón instalar), alertas en
+  `ContentView` y `PreferencesView`.
+- Tests: `Tests/PagePlanTests/UpdateCheckerTests.swift` (SemVer, decodificación,
+  SHA256).
+
+---
+
 ## Orden recomendado
 
 1. **#3 Archivos recientes** (menor riesgo, resultado inmediato)
