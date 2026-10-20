@@ -54,14 +54,20 @@ codesign --verify --deep "$APP"
 
 # Notarización opcional: solo si hay credenciales de Apple. Se notariza un zip
 # temporal de la app y, al validarse, se grapa la app ANTES de empaquetar.
-# Variables: APPLE_ID, APPLE_TEAM_ID y APPLE_APP_PASSWORD (o NOTARY_PROFILE con
-# `notarytool store-credentials`).
-if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+# Variables: APPLE_ID, APPLE_TEAM_ID y APPLE_APP_PASSWORD (para guardar el perfil
+# en el llavero) o NOTARY_PROFILE (perfil ya guardado con
+# `xcrun notarytool store-credentials`).
+if [ -n "${NOTARY_PROFILE:-}" ] || { [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; }; then
   echo "→ Notarizando"
+  PROFILE="${NOTARY_PROFILE:-doblecara-notary}"
+  if [ -z "${NOTARY_PROFILE:-}" ]; then
+    # La contraseña solo se pasa aquí, una vez, al guardarla en el llavero.
+    xcrun notarytool store-credentials "$PROFILE" \
+      --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+  fi
   NOTARIZE_ZIP="$W/notarize.zip"
   ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
-  xcrun notarytool submit "$NOTARIZE_ZIP" --wait \
-    --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+  xcrun notarytool submit "$NOTARIZE_ZIP" --keychain-profile "$PROFILE" --wait
   xcrun stapler staple "$APP"
 fi
 
