@@ -41,8 +41,28 @@ cp "$HERE/Info.plist" "$APP/Contents/"
 plutil -replace CFBundleShortVersionString -string "${VERSION}" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "${VERSION}" "$APP/Contents/Info.plist"
 cp "$W/AppIcon.icns" "$APP/Contents/Resources/"
-codesign --force --deep -s - "$APP"
+
+# Firma. Con DEVELOPER_ID se firma con Developer ID + hardened runtime (requisito
+# para notarizar); sin él se firma ad hoc (por defecto).
+if [ -n "${DEVELOPER_ID:-}" ]; then
+  codesign --force --deep --options runtime --timestamp --sign "$DEVELOPER_ID" "$APP"
+else
+  codesign --force --deep -s - "$APP"
+fi
 codesign --verify --deep "$APP"
+
+# Notarización opcional: solo si hay credenciales de Apple. Se notariza un zip
+# temporal de la app y, al validarse, se grapa la app ANTES de empaquetar.
+# Variables: APPLE_ID, APPLE_TEAM_ID y APPLE_APP_PASSWORD (o NOTARY_PROFILE con
+# `notarytool store-credentials`).
+if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+  echo "→ Notarizando"
+  NOTARIZE_ZIP="$W/notarize.zip"
+  ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
+  xcrun notarytool submit "$NOTARIZE_ZIP" --wait \
+    --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+  xcrun stapler staple "$APP"
+fi
 
 rm -rf "$DIST"; mkdir -p "$DIST"
 
