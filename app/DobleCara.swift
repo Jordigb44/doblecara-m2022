@@ -757,6 +757,7 @@ final class Model: ObservableObject {
 struct ContentView: View {
     @EnvironmentObject var m: Model
     @AppStorage("showPageGrid") private var showPages = false
+    @AppStorage("largeUI") private var largeUI = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -775,6 +776,7 @@ struct ContentView: View {
             }
             .frame(width: 400)
         }
+        .environment(\.dynamicTypeSize, largeUI ? .xxxLarge : .large)
         .onOpenURL { m.load($0) }
         .onAppear { if !m.welcomeShown { m.showWelcome = true } }
         .onChange(of: m.pageMode) { mode in
@@ -1888,6 +1890,7 @@ struct PreferencesView: View {
     @EnvironmentObject var m: Model
     @State private var showingSaveAlert = false
     @State private var newProfileName = ""
+    @AppStorage("largeUI") private var largeUI = false
 
     var body: some View {
         Form {
@@ -1923,6 +1926,7 @@ struct PreferencesView: View {
             }
             Section("Ayuda") {
                 Toggle("Mostrar «¿Es tu primera vez?»", isOn: $m.showFirstTime)
+                Toggle("Letra grande", isOn: $largeUI)
                 HStack {
                     Button("Calibrar la impresora…") { m.presentCalibration() }
                         .disabled(m.busy)
