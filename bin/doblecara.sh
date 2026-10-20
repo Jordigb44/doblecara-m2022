@@ -20,6 +20,7 @@ BASE="$(cd "$(dirname "$SELF")/.." && pwd)"
 # shellcheck source=../config.sh
 source "$BASE/config.sh"
 USER_CONF="$HOME/.config/doblecara-m2022.conf"
+# shellcheck disable=SC1090  # ruta dinámica definida por el usuario, puede no existir
 [ -f "$USER_CONF" ] && source "$USER_CONF"
 
 PDFTOOL="$BASE/lib/pdf_tool.js"
