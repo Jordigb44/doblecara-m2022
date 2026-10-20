@@ -78,4 +78,22 @@ enum PagePlan {
     }
 
     static func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
+
+    /// Orden de páginas para un folleto (booklet): se rellena hasta múltiplo de 4
+    /// y se devuelven las páginas en el orden en que van por cada cara de hoja.
+    /// Cada grupo de 4 = [anverso-izq, anverso-der, reverso-izq, reverso-der].
+    /// nil = página en blanco (relleno).
+    static func bookletOrder(pageCount n: Int) -> [Int?] {
+        guard n > 0 else { return [] }
+        let total = (n + 3) / 4 * 4
+        var pages: [Int?] = (0..<n).map { Optional($0) }
+        if total > n { pages.append(contentsOf: Array(repeating: nil, count: total - n)) }
+        var out: [Int?] = []
+        var lo = 0, hi = total - 1
+        while lo < hi {
+            out += [pages[hi], pages[lo], pages[lo + 1], pages[hi - 1]]
+            lo += 2; hi -= 2
+        }
+        return out
+    }
 }

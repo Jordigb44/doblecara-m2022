@@ -134,4 +134,23 @@ final class PagePlanTests: XCTestCase {
         XCTAssertEqual(PagePlan.plural(1, "página", "páginas"), "1 página")
         XCTAssertEqual(PagePlan.plural(2, "página", "páginas"), "2 páginas")
     }
+
+    // MARK: bookletOrder
+
+    func testBookletOrder4() {
+        XCTAssertEqual(PagePlan.bookletOrder(pageCount: 4), [3, 0, 1, 2])
+    }
+
+    func testBookletOrderVacio() {
+        XCTAssertEqual(PagePlan.bookletOrder(pageCount: 0), [])
+    }
+
+    func testBookletOrder1() {
+        XCTAssertEqual(PagePlan.bookletOrder(pageCount: 1), [nil, 0, nil, nil])
+    }
+
+    func testBookletOrderRellenaAMultiploDe4() {
+        XCTAssertEqual(PagePlan.bookletOrder(pageCount: 5).count, 8)
+        XCTAssertEqual(PagePlan.bookletOrder(pageCount: 7).count, 8)
+    }
 }
