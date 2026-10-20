@@ -64,8 +64,8 @@ enum Shell {
         p.standardOutput = pipe
         p.standardError = pipe
         do { try p.run() } catch { return (-1, "\(error.localizedDescription)") }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return (p.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
@@ -104,6 +104,17 @@ enum Shell {
     static func jobPending(_ id: String, printer: String) -> Bool {
         run("/usr/bin/lpstat", ["-o", printer]).output
             .split(separator: "\n").contains { $0.hasPrefix(id + " ") }
+    }
+
+    /// true si el trabajo ya terminó pero quedó abortado/cancelado en la cola
+    /// (detección por palabras clave, sin depender de un texto exacto del sistema)
+    static func jobAborted(_ id: String, printer: String) -> Bool {
+        let out = run("/usr/bin/lpstat", ["-W", "completed", "-o", printer]).output
+        let lines = out.split(separator: "\n").filter { $0.hasPrefix(id + " ") }
+        let lower = lines.joined(separator: " ").lowercased()
+        return lower.contains("aborted") || lower.contains("canceled")
+            || lower.contains("abortado") || lower.contains("cancelado")
+            || lower.contains("anulado")
     }
 
     static func cancel(_ id: String) { run("/usr/bin/cancel", [id]) }
@@ -449,8 +460,9 @@ final class Model: ObservableObject {
             let r = await Task.detached { Shell.lp(file: file, printer: p, title: t, paper: paper, fit: fit, copies: n) }.value
             if let e = r.error { phase = .failed(e); return }
             currentJob = r.id
-            await waitForJob()
+            let ok = await waitForJob()
             guard phase == .printingA else { return }  // cancelado
+            if !ok { phase = .failed("La impresión no terminó a tiempo. Revisa la impresora."); return }
             phase = .done
             if notify { Notifier.post("Impresión terminada", "«\(t)» ya está impreso.") }
         }
@@ -463,8 +475,9 @@ final class Model: ObservableObject {
             let r = await Task.detached { Shell.lp(file: file, printer: p, title: t, paper: paper, fit: fit) }.value
             if let e = r.error { phase = .failed(e); return }
             currentJob = r.id
-            await waitForJob()
+            let ok = await waitForJob()
             guard phase == printing else { return }  // cancelado
+            if !ok { phase = .failed("La impresión no terminó a tiempo. Revisa la impresora."); return }
             phase = next
             if next == .waitingFlip {
                 if notify {
@@ -482,10 +495,10 @@ final class Model: ObservableObject {
         }
     }
 
-    private func waitForJob() async {
+    private func waitForJob() async -> Bool {
         guard let id = currentJob else {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            return
+            return true
         }
         let p = printer
         let start = Date()
@@ -494,7 +507,10 @@ final class Model: ObservableObject {
             if !pending { break }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
+        let finished = Date().timeIntervalSince(start) < 900
         currentJob = nil
+        if !finished { return false }
+        return await !Task.detached { Shell.jobAborted(id, printer: p) }.value
     }
 
     func cancel() {
