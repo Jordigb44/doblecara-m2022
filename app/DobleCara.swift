@@ -1607,9 +1607,12 @@ struct SettingsForm: View {
                     Button { m.openPanel() } label: { Image(systemName: "folder") }
                         .buttonStyle(.borderless).help("Abrir otro PDF")
                     if m.doc != nil {
-                        Button { confirmDelete = true } label: { Image(systemName: "trash") }
-                            .buttonStyle(.borderless)
-                            .help("Mover el documento actual y la cola a la Papelera")
+                        Button(role: .destructive) { confirmDelete = true } label: {
+                            Label("Eliminar", systemImage: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.red)
+                        .help("Mover el documento actual y la cola a la Papelera")
                     }
                 }
                 if m.printers.isEmpty {
