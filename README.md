@@ -34,6 +34,10 @@ App universal (Apple Silicon e Intel), macOS 13 o posterior.
 Para generar el paquete tú mismo: `./app/package.sh 1.0.0` (o doble clic en
 `Empaquetar.command`); deja el `.dmg` y el `.zip` en `dist/`.
 
+Para notarizar (evita el aviso de desarrollador), firma y notariza pasando las
+variables `DEVELOPER_ID`, `APPLE_ID`, `APPLE_TEAM_ID` y `APPLE_APP_PASSWORD` a
+`package.sh` (requiere una cuenta de Apple Developer).
+
 ## Compilar desde el código
 
 ### Requisitos
