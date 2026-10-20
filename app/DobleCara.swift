@@ -466,6 +466,10 @@ final class Model: ObservableObject {
 
     var sheetCount: Int {
         if booklet && effectiveDuplex { return (selection.count + 3) / 4 }
+        if pagesPerSheet > 1 {
+            let sides = (selection.count + pagesPerSheet - 1) / pagesPerSheet
+            return effectiveDuplex ? (sides + 1) / 2 : sides
+        }
         return effectiveDuplex ? (sequence().count + 1) / 2 : selection.count * max(1, copies)
     }
 
@@ -477,6 +481,9 @@ final class Model: ObservableObject {
         if booklet && effectiveDuplex {
             let sheets = (n + 3) / 4
             return "Folleto: \(PagePlan.plural(n, "página", "páginas")) → \(PagePlan.plural(sheets, "hoja", "hojas"))"
+        }
+        if pagesPerSheet > 1 {
+            return "\(pagesPerSheet) por hoja: \(PagePlan.plural(n, "página", "páginas")) → \(PagePlan.plural(sheetCount, "hoja", "hojas"))"
         }
         let per = effectiveDuplex ? (n + 1) / 2 : n
         var s = "\(PagePlan.plural(n, "página", "páginas")) → \(PagePlan.plural(per, "hoja", "hojas"))"
@@ -591,9 +598,10 @@ final class Model: ObservableObject {
         guard let doc else { return nil }
         let sel = selection
         guard !sel.isEmpty else { return nil }
-        let n = max(2, min(4, pagesPerSheet))
-        let cols = 2
-        let rows = n == 4 ? 2 : 1
+        let n = pagesPerSheet
+        let grid = PagePlan.nupGrid(pagesPerSheet: n)
+        let cols = grid.cols
+        let rows = grid.rows
 
         func pageSize(_ i: Int) -> CGSize {
             guard let p = doc.page(at: i) else { return CGSize(width: 595, height: 842) }
@@ -1326,9 +1334,17 @@ struct EmptyDropView: View {
 struct PagesGrid: View {
     @EnvironmentObject var m: Model
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if m.pagesPerSheet > 1 {
+            SheetsGrid()
+        } else {
+            individualPages
+        }
+    }
+
+    private var individualPages: some View {
         let plan = m.sheetPlan
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 14)], spacing: 18) {
                     ForEach(0..<m.pageCount, id: \.self) { i in
@@ -1354,6 +1370,124 @@ struct PagesGrid: View {
             .padding(.vertical, 7)
         }
         .background(Color(nsColor: .underPageBackgroundColor))
+    }
+}
+
+/// Vista de «Hojas» para impresión N-up: muestra cada cara con sus páginas
+/// dispuestas en la rejilla en que se imprimirán.
+struct SheetsGrid: View {
+    @EnvironmentObject var m: Model
+
+    var body: some View {
+        let sel = m.selection
+        let n = m.pagesPerSheet
+        let grid = PagePlan.nupGrid(pagesPerSheet: n)
+        let sides = stride(from: 0, to: sel.count, by: n).map { Array(sel[$0..<min($0 + n, sel.count)]) }
+
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 18) {
+                    ForEach(Array(sides.enumerated()), id: \.offset) { k, pages in
+                        SheetCard(side: k, pages: pages, cols: grid.cols, rows: grid.rows, duplex: m.effectiveDuplex)
+                    }
+                }
+                .padding(16)
+            }
+            Divider()
+            HStack(spacing: 14) {
+                if m.effectiveDuplex {
+                    LegendSwatch(color: .accentColor, text: "Cara A")
+                    LegendSwatch(color: .orange, text: "Cara B")
+                }
+                LegendSwatch(color: .secondary.opacity(0.35), text: "En blanco")
+                Spacer()
+                Text("Clic en una página para quitarla o añadirla")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+        }
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
+}
+
+/// Una cara (o hoja) con N páginas en rejilla, tal como se imprimirá.
+struct SheetCard: View {
+    @EnvironmentObject var m: Model
+    let side: Int
+    let pages: [Int]
+    let cols: Int
+    let rows: Int
+    let duplex: Bool
+
+    var body: some View {
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 5), count: cols)
+        let sheet = side / 2 + 1
+        let isBack = duplex && side % 2 == 1
+
+        VStack(spacing: 7) {
+            LazyVGrid(columns: columns, spacing: 5) {
+                ForEach(0..<(cols * rows), id: \.self) { i in
+                    if i < pages.count {
+                        SheetPageCell(index: pages[i])
+                    } else {
+                        Rectangle().fill(Color.secondary.opacity(0.15))
+                            .aspectRatio(0.707, contentMode: .fit)
+                    }
+                }
+            }
+            .padding(10)
+            .background(Color.white)
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(isBack ? Color.orange : Color.accentColor, lineWidth: 1.5))
+            .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
+
+            HStack(spacing: 6) {
+                Text(duplex ? "Hoja \(sheet) · Cara \(isBack ? "B" : "A")" : "Hoja \(side + 1)")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(isBack ? Color.orange : Color.accentColor))
+                if isBack && m.rotateB {
+                    Label("girada 180°", systemImage: "rotate.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+/// Miniatura de una página dentro de una hoja N-up.
+struct SheetPageCell: View {
+    @EnvironmentObject var m: Model
+    let index: Int
+
+    var body: some View {
+        let on = m.selection.contains(index)
+        VStack(spacing: 2) {
+            Group {
+                if let img = m.thumbnail(index) {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .rotationEffect(.degrees(m.rotateB && on ? 180 : 0))
+                } else {
+                    Rectangle().fill(Color.white).aspectRatio(0.707, contentMode: .fit)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .background(Color.white)
+            Text("\(index + 1)")
+                .font(.caption2)
+                .foregroundStyle(on ? .primary : .secondary)
+        }
+        .opacity(on ? 1 : 0.35)
+        .saturation(on && !m.grayscale ? 1 : 0)
+        .contentShape(Rectangle())
+        .onTapGesture { m.togglePage(index) }
+        .help(on ? "Clic para NO imprimir esta página" : "Clic para imprimir esta página")
     }
 }
 
@@ -1575,6 +1709,8 @@ struct PrinterRows: View {
             Text("1").tag(1)
             Text("2").tag(2)
             Text("4").tag(4)
+            Text("6").tag(6)
+            Text("8").tag(8)
         }
     }
 }

@@ -96,4 +96,15 @@ enum PagePlan {
         }
         return out
     }
+
+    /// Rejilla (columnas × filas) para N páginas por hoja.
+    static func nupGrid(pagesPerSheet n: Int) -> (cols: Int, rows: Int) {
+        switch n {
+        case 2: return (2, 1)
+        case 4: return (2, 2)
+        case 6: return (3, 2)
+        case 8: return (4, 2)
+        default: return (1, 1)
+        }
+    }
 }

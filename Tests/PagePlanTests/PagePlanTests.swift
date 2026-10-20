@@ -153,4 +153,17 @@ final class PagePlanTests: XCTestCase {
         XCTAssertEqual(PagePlan.bookletOrder(pageCount: 5).count, 8)
         XCTAssertEqual(PagePlan.bookletOrder(pageCount: 7).count, 8)
     }
+
+    // MARK: nupGrid
+
+    func testNupGrid() {
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 2).cols, 2)
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 2).rows, 1)
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 4).cols, 2)
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 4).rows, 2)
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 6).cols, 3)
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 6).rows, 2)
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 8).cols, 4)
+        XCTAssertEqual(PagePlan.nupGrid(pagesPerSheet: 8).rows, 2)
+    }
 }
