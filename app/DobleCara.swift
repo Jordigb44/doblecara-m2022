@@ -860,6 +860,8 @@ struct PDFPreview: NSViewRepresentable {
     @Binding var page: Int
     /// Factor de zoom (0 = ajustar al ancho)
     @Binding var zoom: CGFloat
+    /// Selección a resaltar (resultado de búsqueda)
+    @Binding var highlight: PDFSelection?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -884,6 +886,11 @@ struct PDFPreview: NSViewRepresentable {
             if v.autoScales { v.autoScales = false }
             if v.scaleFactor != zoom { v.scaleFactor = zoom }
         }
+        if let h = highlight, h !== context.coordinator.appliedSelection {
+            context.coordinator.appliedSelection = h
+            v.setCurrentSelection(h, animate: true)
+            v.go(to: h)
+        }
         guard let doc, let current = v.currentPage else { return }
         if doc.index(for: current) + 1 != page, let target = doc.page(at: page - 1) {
             v.go(to: target)
@@ -893,6 +900,7 @@ struct PDFPreview: NSViewRepresentable {
     final class Coordinator: NSObject {
         var parent: PDFPreview
         weak var view: PDFView?
+        weak var appliedSelection: PDFSelection?
         init(_ parent: PDFPreview) { self.parent = parent }
 
         @objc func pageChanged(_ n: Notification) {
@@ -963,6 +971,8 @@ struct PreviewPane: View {
     @State private var dropTargeted = false
     @State private var page = 1
     @State private var zoom: CGFloat = 0
+    @State private var query = ""
+    @State private var highlight: PDFSelection?
 
     var body: some View {
         ZStack {
@@ -989,7 +999,21 @@ struct PreviewPane: View {
                     if showPages {
                         PagesGrid()
                     } else {
-                        PDFPreview(doc: m.doc, page: $page, zoom: $zoom)
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                            TextField("Buscar en el documento", text: $query)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit(doSearch)
+                            if !query.isEmpty {
+                                Button { query = ""; highlight = nil } label: {
+                                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        PDFPreview(doc: m.doc, page: $page, zoom: $zoom, highlight: $highlight)
                         Divider()
                         HStack {
                             Button { zoom = max(0.25, (zoom == 0 ? 1 : zoom) / 1.25) } label: {
@@ -1027,6 +1051,17 @@ struct PreviewPane: View {
             return true
         } isTargeted: { dropTargeted = $0 }
         .onReceive(m.$doc) { _ in page = 1 }
+    }
+
+    private func doSearch() {
+        guard let doc = m.doc, !query.isEmpty else { return }
+        let results = doc.findString(query, withOptions: [.caseInsensitive])
+        if let first = results.first {
+            highlight = first
+            if let p = first.pages.first {
+                page = doc.index(for: p) + 1
+            }
+        }
     }
 }
 
