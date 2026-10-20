@@ -701,7 +701,7 @@ final class Model: ObservableObject {
         }
         if notify { Notifier.requestPermission() }
         let seq = sequence()
-        if !effectiveDuplex || seq.count <= 1 {
+        if !effectiveDuplex || selection.count <= 1 {
             printSingle()
             return
         }
@@ -1890,7 +1890,7 @@ struct DonePanel: View {
                 .foregroundStyle(.secondary)
             HStack {
                 Button(String(localized: "Abrir otro PDF…")) { m.openPanel() }
-                Button(String(localized: "Imprimir otra vez")) { m.reset() }
+                Button(String(localized: "Imprimir otra vez")) { m.start() }
             }
             .padding(.top, 6)
             if !m.queue.isEmpty {
