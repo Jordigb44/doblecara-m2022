@@ -203,6 +203,8 @@ final class Model: ObservableObject {
     // Ajustes (se recuerdan)
     @Published var printer: String { didSet { defaults.set(printer, forKey: "printer") } }
     @Published var paper: String { didSet { defaults.set(paper, forKey: "paper") } }
+    /// true = al cargar un documento se preselecciona el papel según su tamaño
+    @Published var autoPaper = true
     @Published var duplex: Bool { didSet { defaults.set(duplex, forKey: "duplex") } }
     @Published var reverseB: Bool { didSet { defaults.set(reverseB, forKey: "reverseB") } }
     @Published var rotateB: Bool { didSet { defaults.set(rotateB, forKey: "rotateB") } }
@@ -284,6 +286,22 @@ final class Model: ObservableObject {
 
     static func displayName(_ printer: String) -> String { printer.replacingOccurrences(of: "_", with: " ") }
 
+    /// Nombre de papel estándar para un tamaño de página (en puntos), tolerando un
+    /// pequeño margen de error y el giro de la página.
+    static func paperName(for size: CGSize) -> String? {
+        let standards: [(String, CGSize)] = [
+            ("A4",     CGSize(width: 595.28, height: 841.89)),
+            ("Letter", CGSize(width: 612,    height: 792)),
+            ("Legal",  CGSize(width: 612,    height: 1008)),
+            ("A5",     CGSize(width: 419.53, height: 595.28)),
+        ]
+        let (w, h) = (size.width, size.height)
+        return standards.first { s in
+            abs(w - s.1.width) < 3 && abs(h - s.1.height) < 3
+                || abs(w - s.1.height) < 3 && abs(h - s.1.width) < 3
+        }?.0
+    }
+
     func refreshPrinters() {
         let list = Shell.printers()
         printers = list
@@ -322,6 +340,11 @@ final class Model: ObservableObject {
         customPages = ""
         copies = 1
         phase = .idle
+        if autoPaper, let first = d?.page(at: 0) {
+            let b = first.bounds(for: .mediaBox)
+            let size = first.rotation % 180 == 0 ? b.size : CGSize(width: b.height, height: b.width)
+            if let name = Self.paperName(for: size) { paper = name }
+        }
         if let u, !recentFiles.contains(u) {
             recentFiles.insert(u, at: 0)
             if recentFiles.count > 10 { recentFiles.removeLast(recentFiles.count - 10) }
@@ -1155,6 +1178,7 @@ struct PrinterRows: View {
             Text("Legal").tag("Legal")
             Text("A5").tag("A5")
         }
+        .onChange(of: m.paper) { _ in m.autoPaper = false }
         Toggle("Ajustar a la página", isOn: $m.fitToPage)
         Toggle("Imprimir en grises", isOn: $m.grayscale)
     }
