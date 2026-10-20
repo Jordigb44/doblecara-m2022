@@ -438,6 +438,13 @@ final class Model: ObservableObject {
         }
     }
 
+    /// Quita el documento actual y vacía la cola, dejando la app vacía.
+    func clearDocuments() {
+        guard !busy, !calibrating else { NSSound.beep(); return }
+        setDocument(nil, url: nil)
+        queue = []
+    }
+
     func thumbnail(_ i: Int) -> NSImage? {
         if let t = thumbs[i] { return t }
         guard let page = doc?.page(at: i) else { return nil }
@@ -1593,6 +1600,11 @@ struct SettingsForm: View {
                     }
                     Button { m.openPanel() } label: { Image(systemName: "folder") }
                         .buttonStyle(.borderless).help("Abrir otro PDF")
+                    if m.doc != nil {
+                        Button { m.clearDocuments() } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                            .help("Quitar el documento actual y la cola")
+                    }
                 }
                 if m.printers.isEmpty {
                     HStack {
