@@ -43,8 +43,11 @@ end imprimir
 EOF
 fi
 
-# El menú PDF del diálogo de impresión bloquea Vista Previa en macOS 27: se quita
-rm -rf "$PDFSERV/${SERVICE_NAME}" "$PDFSERV/${SERVICE_NAME}.app"
+# El servicio antiguo (script) bloqueaba Vista Previa en macOS 27: se quita
+rm -rf "${PDFSERV:?}/${SERVICE_NAME}" "${PDFSERV:?}/${SERVICE_NAME}.app"
+# En su lugar, el menú PDF abre la app directamente (se puede quitar en Preferencias)
+mkdir -p "$PDFSERV"
+ln -sfn "${APP}" "$PDFSERV/Doble cara manual (M2022)"
 
 echo "→ Enlazando el comando 'doblecara' en ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
@@ -57,6 +60,7 @@ echo
 echo "✔ Instalado."
 echo "  • Finder: clic derecho en un PDF > Abrir con > Doble Cara M2022"
 echo "  • O arrastra un PDF a la ventana de la app o a su icono del Dock"
+echo "  • Al imprimir: menú PDF > Doble cara manual (M2022)"
 echo "  • Terminal: ~/.local/bin/doblecara archivo.pdf"
 echo
 echo "Primera vez: en la app, «Cargar hoja de prueba» y luego «Imprimir cara A» para comprobar la orientación"

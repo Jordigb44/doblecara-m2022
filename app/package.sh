@@ -5,7 +5,10 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-VERSION="${1:-1.0.0}"
+# La versión por defecto sale del Info.plist (fuente de verdad); se puede
+# sobrescribir pasándola como primer argumento: app/package.sh 1.2.0
+VERSION="${1:-$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$HERE/Info.plist" 2>/dev/null)}"
+VERSION="${VERSION:-1.0.0}"
 NAME="Doble Cara M2022"
 BASE="DobleCaraM2022-${VERSION}-macOS"
 DIST="$ROOT/dist"
@@ -20,8 +23,8 @@ for arch in arm64 x86_64; do
   echo "→ Compilando $arch"
   "$SWIFTC" -O -swift-version 5 -parse-as-library -sdk "$SDK" \
     -target "$arch-apple-macos13.0" \
-    -framework SwiftUI -framework AppKit -framework PDFKit -framework UniformTypeIdentifiers \
-    "$HERE/DobleCara.swift" -o "$W/DobleCara-$arch"
+    -framework SwiftUI -framework AppKit -framework PDFKit -framework UniformTypeIdentifiers -framework UserNotifications -framework AppIntents \
+    "$HERE/DobleCara.swift" "$HERE/PagePlan.swift" "$HERE/PrintDuplexIntent.swift" -o "$W/DobleCara-$arch"
 done
 lipo -create -output "$W/DobleCara" "$W/DobleCara-arm64" "$W/DobleCara-x86_64"
 lipo -info "$W/DobleCara"
@@ -35,11 +38,38 @@ APP="$W/${NAME}.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$W/DobleCara" "$APP/Contents/MacOS/"
 cp "$HERE/Info.plist" "$APP/Contents/"
+[ -d "$HERE/Resources" ] && cp -R "$HERE/Resources/." "$APP/Contents/Resources/" || true
 plutil -replace CFBundleShortVersionString -string "${VERSION}" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "${VERSION}" "$APP/Contents/Info.plist"
 cp "$W/AppIcon.icns" "$APP/Contents/Resources/"
-codesign --force --deep -s - "$APP"
+
+# Firma. Con DEVELOPER_ID se firma con Developer ID + hardened runtime (requisito
+# para notarizar); sin él se firma ad hoc (por defecto).
+if [ -n "${DEVELOPER_ID:-}" ]; then
+  codesign --force --deep --options runtime --timestamp --sign "$DEVELOPER_ID" "$APP"
+else
+  codesign --force --deep -s - "$APP"
+fi
 codesign --verify --deep "$APP"
+
+# Notarización opcional: solo si hay credenciales de Apple. Se notariza un zip
+# temporal de la app y, al validarse, se grapa la app ANTES de empaquetar.
+# Variables: APPLE_ID, APPLE_TEAM_ID y APPLE_APP_PASSWORD (para guardar el perfil
+# en el llavero) o NOTARY_PROFILE (perfil ya guardado con
+# `xcrun notarytool store-credentials`).
+if [ -n "${NOTARY_PROFILE:-}" ] || { [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; }; then
+  echo "→ Notarizando"
+  PROFILE="${NOTARY_PROFILE:-doblecara-notary}"
+  if [ -z "${NOTARY_PROFILE:-}" ]; then
+    # La contraseña solo se pasa aquí, una vez, al guardarla en el llavero.
+    xcrun notarytool store-credentials "$PROFILE" \
+      --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+  fi
+  NOTARIZE_ZIP="$W/notarize.zip"
+  ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
+  xcrun notarytool submit "$NOTARIZE_ZIP" --keychain-profile "$PROFILE" --wait
+  xcrun stapler staple "$APP"
+fi
 
 rm -rf "$DIST"; mkdir -p "$DIST"
 

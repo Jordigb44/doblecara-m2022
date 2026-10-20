@@ -1,14 +1,14 @@
 name: Build macOS
 
 # Genera la app universal en .dmg y .zip, más SHA256SUMS.txt.
-# - push a main o pull request hacia main: deja los archivos como artefacto del run
+# - push a main/develop o PR hacia ellos: tests + lint + empaquetado como artefacto
 # - etiqueta vX.Y.Z: además crea el release de GitHub con los archivos adjuntos
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
 
 permissions:
@@ -41,6 +41,14 @@ jobs:
           sw_vers
           xcodebuild -version
           xcrun swiftc --version
+
+      - name: Tests
+        run: swift test
+
+      - name: ShellCheck
+        run: |
+          brew install shellcheck
+          shellcheck -S warning bin/*.sh app/*.sh install.sh uninstall.sh crear_cola_doble_cara.sh
 
       - name: Empaquetar
         run: ./app/package.sh "${{ steps.version.outputs.version }}"

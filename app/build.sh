@@ -14,8 +14,8 @@ echo "→ Compilando con $SWIFTC"
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 "$SWIFTC" -O -swift-version 5 -parse-as-library -sdk "$SDK" \
   -target "$(uname -m)-apple-macos13.0" \
-  -framework SwiftUI -framework AppKit -framework PDFKit -framework UniformTypeIdentifiers \
-  "$HERE/DobleCara.swift" -o "$BUILD/DobleCara"
+  -framework SwiftUI -framework AppKit -framework PDFKit -framework UniformTypeIdentifiers -framework UserNotifications -framework AppIntents \
+  "$HERE/DobleCara.swift" "$HERE/PagePlan.swift" "$HERE/PrintDuplexIntent.swift" -o "$BUILD/DobleCara"
 
 echo "→ Creando $APP"
 pkill -f "Doble Cara M2022.app/Contents/MacOS" 2>/dev/null || true
@@ -23,6 +23,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/DobleCara" "$APP/Contents/MacOS/"
 cp "$HERE/Info.plist" "$APP/Contents/"
+[ -d "$HERE/Resources" ] && cp -R "$HERE/Resources/." "$APP/Contents/Resources/" || true
 if xcrun --sdk macosx swift "$HERE/make_icon.swift" "$BUILD/AppIcon.iconset" >/dev/null 2>&1; then
   iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns" || true
 fi

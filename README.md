@@ -10,8 +10,12 @@ App nativa de macOS (SwiftUI + PDFKit) que:
 
 1. Abre el PDF y te deja elegir impresora, papel, copias e intervalo de páginas.
 2. Imprime las páginas impares (**cara A**).
-3. Espera a que la impresora termine y te avisa para dar la vuelta a las hojas.
+3. Espera a que la impresora termine y te avisa (sonido y notificación) para volver a
+   meter las hojas.
 4. Imprime las páginas pares (**cara B**) en el orden y la orientación correctos.
+
+Pensada también para quien no se maneja bien con el ordenador: te guía paso a paso,
+con una bienvenida la primera vez y un asistente para calibrar la impresora.
 
 No sustituye al driver de la impresora: funciona encima de la cola de impresión
 que ya tengas instalada.
@@ -29,6 +33,10 @@ App universal (Apple Silicon e Intel), macOS 13 o posterior.
 
 Para generar el paquete tú mismo: `./app/package.sh 1.0.0` (o doble clic en
 `Empaquetar.command`); deja el `.dmg` y el `.zip` en `dist/`.
+
+Para notarizar (evita el aviso de desarrollador), firma y notariza pasando las
+variables `DEVELOPER_ID`, `APPLE_ID`, `APPLE_TEAM_ID` y `APPLE_APP_PASSWORD` a
+`package.sh` (requiere una cuenta de Apple Developer).
 
 ## Compilar desde el código
 
@@ -52,13 +60,37 @@ Instala la app en `~/Applications/Doble Cara M2022.app` y el comando
 
 ## Uso
 
+- **Al imprimir desde cualquier app:** *Archivo → Imprimir…* → menú **PDF** (abajo a la
+  izquierda) → **Doble cara manual (M2022)**. El documento se abre en la app. Viene
+  activado por defecto; se quita en *Preferencias* (⌘,).
 - **Finder:** clic derecho en un PDF → *Abrir con* → **Doble Cara M2022**.
 - **Arrastrar** el PDF a la ventana de la app o a su icono del Dock.
-- **Desde Vista Previa:** arrastra el icono pequeño del título de la ventana a la app.
+- **Acción rápida de Finder:** clic derecho en un PDF → *Acciones rápidas* →
+  **Imprimir a doble cara**. Se instala con `integracion/instalar-accion-rapida.sh`
+  (y se activa en *Ajustes → Teclado → Funciones rápidas → Finder*).
 
-Pulsa **Imprimir cara A**. Cuando termine, mete las hojas en la bandeja de entrada
-**con la cara impresa hacia abajo y la parte de arriba entrando primero**, sin
-cambiar su orden, y pulsa **Imprimir cara B**.
+La ventana te guía en cuatro pasos: **Documento → Cara A → Meter hojas → Cara B**.
+
+1. Elige la impresora y qué imprimir: todas las páginas, un intervalo *desde–hasta*
+   (escribiendo los números o con las flechas) o páginas sueltas (`1-3, 5, 8`).
+   Abajo se resume el resultado: «8 páginas → 4 hojas».
+2. Pulsa **Imprimir cara A** (⌘P).
+3. Cuando termine, la app te enseña con una animación cómo volver a meter las hojas.
+   Con «Girar cara B 180°» activado (lo normal), se meten **tal cual salen de la
+   impresora, sin darles la vuelta ni girarlas**.
+4. Pulsa **Imprimir cara B**.
+
+En la vista previa ves en qué página estás («Página 3 de 9») y puedes saltar a otra
+escribiendo el número. La vista **Hojas** muestra todas las páginas en miniatura:
+las que se imprimen llevan su hoja y cara («Hoja 2 · A»), las que no salen apagadas;
+clic en una para quitarla o añadirla.
+
+### Primera vez
+
+- Sale una **bienvenida** que explica cómo funciona (*Ayuda → Ver la bienvenida*).
+- **Calibrar la impresora…** imprime 2 hojas de prueba (páginas 1 a 4), te pregunta
+  qué página hay detrás de la 1 y si se lee al derecho, y ajusta solo las opciones
+  de la cara B. Se puede ocultar en *Funciones avanzadas*.
 
 ### Opciones de la cara B
 
@@ -67,9 +99,9 @@ cambiar su orden, y pulsa **Imprimir cara B**.
 | Cara B en orden inverso | ✔ | La M2022 deja las hojas boca abajo; la última sale arriba. |
 | Girar cara B 180° | ✔ | Con la M2022 el dorso sale cabeza abajo si no se gira. |
 | Dorso en blanco si las páginas son impares | ✔ | Así vuelves a meter todas las hojas sin retirar ninguna. |
+| Volver a meter las hojas (cara impresa abajo/arriba) | abajo | Solo aparece si se desactiva el giro de 180°. |
 
-La primera vez usa **Cargar hoja de prueba** y comprueba que las dos caras se leen
-en el mismo sentido.
+Están en **Funciones avanzadas** (en la ventana principal) y en *Preferencias* (⌘,).
 
 ### Línea de comandos
 
@@ -82,9 +114,11 @@ Configuración en `config.sh` (o `~/.config/doblecara-m2022.conf`).
 
 ## Notas técnicas sobre macOS 27
 
-- **Menú «PDF» del diálogo de impresión:** en macOS 27, Vista Previa se bloquea al
-  usar un servicio PDF propio (ni siquiera llega a ejecutarlo), así que la app no
-  se instala ahí.
+- **Menú «PDF» del diálogo de impresión:** en macOS 27, Vista Previa se bloqueaba
+  con el servicio PDF antiguo (un script). Ahora el menú usa un enlace a la propia
+  app en `~/Library/PDF Services/Doble cara manual (M2022)`, que el sistema abre
+  como cualquier documento. La app lee el PDF en memoria al recibirlo, porque el
+  archivo temporal del diálogo de impresión puede borrarse enseguida.
 - **Giro de 180°:** el sistema de impresión ignora la marca `/Rotate` de 180°, así
   que la app redibuja la página girada.
 - **Tamaño de papel:** el PPD de Samsung tiene *Letter* por defecto; `lp` sin

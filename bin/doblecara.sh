@@ -20,6 +20,7 @@ BASE="$(cd "$(dirname "$SELF")/.." && pwd)"
 # shellcheck source=../config.sh
 source "$BASE/config.sh"
 USER_CONF="$HOME/.config/doblecara-m2022.conf"
+# shellcheck disable=SC1090  # ruta dinámica definida por el usuario, puede no existir
 [ -f "$USER_CONF" ] && source "$USER_CONF"
 
 PDFTOOL="$BASE/lib/pdf_tool.js"
@@ -32,20 +33,21 @@ INPUT=""
 
 # ---------------------------------------------------------------- utilidades
 
+# Los mensajes se pasan a osascript como argumentos (argv), no interpolados en el
+# script, para evitar inyección de AppleScript desde nombres de archivo o títulos.
+
 die() {
   if [ "$GUI" = 1 ]; then
-    osascript -e "activate" -e "display alert \"$APP_TITLE\" message \"$(esc "$1")\" as critical" >/dev/null 2>&1
+    osascript -e 'on run argv' -e 'activate' -e 'display alert (item 2 of argv) message (item 1 of argv) as critical' -e 'end run' "$1" "$APP_TITLE" >/dev/null 2>&1
   fi
   echo "Error: $1" >&2
   exit 1
 }
 
-esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-
 info() {
   echo "$1"
   if [ "$GUI" = 1 ]; then
-    osascript -e "display notification \"$(esc "$1")\" with title \"$APP_TITLE\"" >/dev/null 2>&1 || true
+    osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title (item 2 of argv)' -e 'end run' "$1" "$APP_TITLE" >/dev/null 2>&1 || true
   fi
 }
 
@@ -57,7 +59,7 @@ ask_continue() {
   fi
   if [ "$GUI" = 1 ]; then
     local r
-    r=$(osascript -e "activate" -e "button returned of (display dialog \"$(esc "$msg")\" with title \"$APP_TITLE\" buttons {\"Cancelar\", \"$button\"} default button \"$button\" cancel button \"Cancelar\" with icon note)" 2>/dev/null)
+    r=$(osascript -e 'on run argv' -e 'activate' -e 'set msg to item 1 of argv' -e 'set btn to item 2 of argv' -e 'set ttl to item 3 of argv' -e 'button returned of (display dialog msg with title ttl buttons {"Cancelar", btn} default button btn cancel button "Cancelar" with icon note)' -e 'end run' "$msg" "$button" "$APP_TITLE" 2>/dev/null)
     [ "$r" = "$button" ]
   else
     printf '\n%s\n\nPulsa INTRO para "%s" o Ctrl+C para cancelar... ' "$msg" "$button"
@@ -90,8 +92,13 @@ pdf_split() { # entrada salida modo orden pad rotar
 # Envía a imprimir y devuelve el id del trabajo
 send_job() { # archivo titulo
   local out
-  # shellcheck disable=SC2086
-  out=$(lp -d "$PRN" -n "$COPIES_PASS" -t "$2" $LP_OPTIONS "$1" 2>&1) || die "lp falló: $out"
+  local -a opts
+  read -r -a opts <<< "$LP_OPTIONS"
+  if [ "${#opts[@]}" -gt 0 ]; then
+    out=$(lp -d "$PRN" -n "$COPIES_PASS" -t "$2" "${opts[@]}" "$1" 2>&1) || die "lp falló: $out"
+  else
+    out=$(lp -d "$PRN" -n "$COPIES_PASS" -t "$2" "$1" 2>&1) || die "lp falló: $out"
+  fi
   # Vale para "request id is X-12" y para "el id de la petición es X-12"
   echo "$out" | grep -o -E "${PRN}-[0-9]+" | head -n1
 }
