@@ -55,6 +55,8 @@ struct DobleCaraApp: App {
                 Button("Ver la bienvenida") { model.presentWelcome() }
                 Button("Calibrar la impresora…") { model.presentCalibration() }
                     .disabled(model.busy)
+                Button("Buscar actualizaciones…") { model.checkForUpdates(interactive: true) }
+                    .disabled(model.updateInstalling)
             }
         }
 
@@ -70,6 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in Model.shared.open(urls) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { @MainActor in Model.shared.autoCheckForUpdates() }
+    }
 }
 
 // MARK: - Utilidades de sistema
@@ -273,6 +278,13 @@ final class Model: ObservableObject {
     @Published var showCalibration = false
     @Published private(set) var calibrating = false
 
+    // Actualizaciones
+    @Published var updateRelease: GitHubRelease?
+    @Published var updateInstalling = false
+    @Published var updateChecking = false
+    @Published var updateNote: String?
+    @Published var autoUpdate: Bool { didSet { defaults.set(autoUpdate, forKey: "autoUpdate") } }
+
     private var currentJob: String?
     private var evenFile: URL?
     private var sheetsInfo = ""
@@ -284,7 +296,7 @@ final class Model: ObservableObject {
                                      "rotateB": true, "padBlank": true, "fitToPage": false,
                                      "grayscale": false, "margin": 0.0,
                                      "faceDown": true, "showFirstTime": true, "notify": true,
-                                     "welcomeShown": false, "pdfMenu": true])
+                                     "welcomeShown": false, "pdfMenu": true, "autoUpdate": true])
         printer = defaults.string(forKey: "printer") ?? ""
         paper = defaults.string(forKey: "paper") ?? "A4"
         recentFiles = (defaults.stringArray(forKey: "recentFiles") ?? []).map { URL(fileURLWithPath: $0) }
@@ -301,6 +313,7 @@ final class Model: ObservableObject {
         welcomeShown = defaults.bool(forKey: "welcomeShown")
         jobsCount = defaults.integer(forKey: "jobsCount")
         sheetsSaved = defaults.integer(forKey: "sheetsSaved")
+        autoUpdate = defaults.bool(forKey: "autoUpdate")
         if let data = defaults.data(forKey: "profiles"),
            let decoded = try? JSONDecoder().decode([PrintProfile].self, from: data) {
             profiles = decoded
@@ -921,6 +934,58 @@ final class Model: ObservableObject {
         showCalibration = true
     }
 
+    // MARK: Actualizaciones
+
+    /// Comprobación automática al abrir: como mucho una vez cada 12 h.
+    func autoCheckForUpdates() {
+        guard autoUpdate else { return }
+        let last = defaults.double(forKey: "lastUpdateCheck")
+        guard Date().timeIntervalSince1970 - last > 12 * 3600 else { return }
+        checkForUpdates(interactive: false)
+    }
+
+    /// Busca la última release en GitHub. `interactive` muestra resultados/errores.
+    func checkForUpdates(interactive: Bool) {
+        guard !updateChecking, !updateInstalling else { return }
+        updateChecking = true
+        Task { @MainActor in
+            defer { updateChecking = false }
+            do {
+                if let rel = try await UpdateChecker.fetchLatest() {
+                    updateRelease = rel
+                } else if interactive {
+                    updateNote = "Tienes la última versión (\(UpdateChecker.currentVersion))."
+                }
+                defaults.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
+            } catch {
+                if interactive {
+                    updateNote = "No se pudo comprobar si hay actualizaciones: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Descarga e instala la release mostrada; la app se cierra y relanza sola.
+    func installUpdate() {
+        guard let rel = updateRelease, !updateInstalling else { return }
+        updateInstalling = true
+        Task { @MainActor in
+            do {
+                let script = try await UpdateInstaller.stage(rel)
+                try UpdateInstaller.launch(script)
+                NSApp.terminate(nil)
+            } catch {
+                updateInstalling = false
+                updateNote = "No se pudo instalar la actualización: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// «Más tarde»: cierta la alerta de nueva versión.
+    func dismissUpdate() {
+        updateRelease = nil
+    }
+
     private func focusMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.windows.first { $0.title == "Doble Cara M2022" }?.makeKeyAndOrderFront(nil)
@@ -1021,6 +1086,20 @@ struct ContentView: View {
         })
         .background(EmptyView().sheet(isPresented: $m.showCalibration) {
             CalibrationSheet().environmentObject(m)
+        })
+        .background(EmptyView().sheet(item: Binding(
+            get: { m.updateRelease },
+            set: { if $0 == nil { m.updateRelease = nil } }
+        )) { rel in
+            UpdateSheet(release: rel).environmentObject(m)
+        })
+        .background(EmptyView().alert("Buscar actualizaciones", isPresented: Binding(
+            get: { m.updateNote != nil },
+            set: { if !$0 { m.updateNote = nil } }
+        )) {
+            Button("OK", role: .cancel) { m.updateNote = nil }
+        } message: {
+            Text(m.updateNote ?? "")
         })
     }
 
@@ -2221,6 +2300,67 @@ extension WelcomePage where Extra == EmptyView {
     }
 }
 
+// MARK: - Actualizaciones
+
+struct UpdateSheet: View {
+    @EnvironmentObject var m: Model
+    @Environment(\.dismiss) private var dismiss
+    let release: GitHubRelease
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill").font(.title2).foregroundStyle(Color.accentColor)
+                Text("Nueva versión disponible").font(.title3.bold())
+                Spacer()
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Tienes la \(UpdateChecker.currentVersion); la \(release.version) ya está publicada.")
+                        .font(.body)
+                    if !(release.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Novedades")
+                            .font(.headline)
+                        Text(release.body ?? "")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(22)
+            }
+            Divider()
+            HStack {
+                Button("Ver en GitHub") {
+                    NSWorkspace.shared.open(release.html_url)
+                }
+                Spacer()
+                if m.updateInstalling {
+                    ProgressView().controlSize(.small)
+                    Text("Instalando…").foregroundStyle(.secondary)
+                } else {
+                    Button("Más tarde") {
+                        m.dismissUpdate()
+                        dismiss()
+                    }
+                    Button("Descargar e instalar") {
+                        m.installUpdate()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(m.updateInstalling)
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 520, height: 400)
+    }
+}
+
 // MARK: - Calibración
 
 struct CalibrationSheet: View {
@@ -2454,6 +2594,17 @@ struct PreferencesView: View {
                     Button("Ver la bienvenida") { m.presentWelcome() }
                 }
             }
+            Section("Actualizaciones") {
+                LabeledContent("Versión", value: UpdateChecker.currentVersion)
+                Toggle("Buscar actualizaciones automáticamente", isOn: $m.autoUpdate)
+                HStack {
+                    Button(m.updateChecking ? "Buscando…" : "Buscar actualizaciones ahora…") {
+                        m.checkForUpdates(interactive: true)
+                    }
+                    .disabled(m.updateChecking || m.updateInstalling)
+                    if m.updateChecking { ProgressView().controlSize(.small) }
+                }
+            }
             Section("Estadísticas") {
                 LabeledContent("Trabajos impresos", value: "\(m.jobsCount)")
                 LabeledContent("Hojas ahorradas a doble cara", value: "\(m.sheetsSaved)")
@@ -2470,5 +2621,19 @@ struct PreferencesView: View {
             }
             Button("Cancelar", role: .cancel) { newProfileName = "" }
         }
+        .background(EmptyView().alert("Buscar actualizaciones", isPresented: Binding(
+            get: { m.updateNote != nil },
+            set: { if !$0 { m.updateNote = nil } }
+        )) {
+            Button("OK", role: .cancel) { m.updateNote = nil }
+        } message: {
+            Text(m.updateNote ?? "")
+        })
+        .background(EmptyView().sheet(item: Binding(
+            get: { m.updateRelease },
+            set: { if $0 == nil { m.updateRelease = nil } }
+        )) { rel in
+            UpdateSheet(release: rel).environmentObject(m)
+        })
     }
 }

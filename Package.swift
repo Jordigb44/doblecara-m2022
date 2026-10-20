@@ -9,7 +9,7 @@ let package = Package(
             name: "PagePlan",
             path: "app",
             exclude: ["Resources"],
-            sources: ["PagePlan.swift"]
+            sources: ["PagePlan.swift", "UpdateChecker.swift"]
         ),
         .testTarget(
             name: "PagePlanTests",

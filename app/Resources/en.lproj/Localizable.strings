@@ -21,3 +21,17 @@
 "Imprimiendo la cara A…" = "Printing side A…";
 
 "Cara A terminada" = "Side A finished";
+
+/* Actualizaciones */
+"Actualizaciones" = "Updates";
+"Buscar actualizaciones…" = "Check for updates…";
+"Buscar actualizaciones" = "Check for updates";
+"Buscar actualizaciones ahora…" = "Check for updates now…";
+"Buscar actualizaciones automáticamente" = "Check for updates automatically";
+"Versión" = "Version";
+"Nueva versión disponible" = "New version available";
+"Novedades" = "What's new";
+"Ver en GitHub" = "View on GitHub";
+"Descargar e instalar" = "Download and install";
+"Instalando…" = "Installing…";
+"OK" = "OK";
