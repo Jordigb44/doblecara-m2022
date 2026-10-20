@@ -84,9 +84,10 @@ enum Shell {
 
     /// Envía un PDF a imprimir y devuelve el id del trabajo (p. ej. "Samsung_M2020_Series-321")
     static func lp(file: URL, printer: String, title: String, paper: String,
-                   fit: Bool, copies: Int = 1) -> (id: String?, error: String?) {
+                   fit: Bool, copies: Int = 1, grayscale: Bool = false) -> (id: String?, error: String?) {
         var args = ["-d", printer, "-t", title, "-o", "media=\(paper)"]
         if fit { args += ["-o", "fit-to-page"] }
+        if grayscale { args += ["-o", "ColorModel=Gray"] }
         if copies > 1 { args += ["-n", String(copies)] }
         args.append(file.path)
         let r = run("/usr/bin/lp", args)
@@ -198,6 +199,7 @@ final class Model: ObservableObject {
     @Published var rotateB: Bool { didSet { defaults.set(rotateB, forKey: "rotateB") } }
     @Published var padBlank: Bool { didSet { defaults.set(padBlank, forKey: "padBlank") } }
     @Published var fitToPage: Bool { didSet { defaults.set(fitToPage, forKey: "fitToPage") } }
+    @Published var grayscale: Bool { didSet { defaults.set(grayscale, forKey: "grayscale") } }
     /// Cómo se vuelven a meter las hojas: cara impresa hacia abajo (true) o hacia arriba
     @Published var faceDown: Bool { didSet { defaults.set(faceDown, forKey: "faceDown") } }
     /// Con el giro de 180° de la cara B, el taco se vuelve a meter tal cual sale de la impresora
@@ -241,6 +243,7 @@ final class Model: ObservableObject {
     private init() {
         defaults.register(defaults: ["paper": "A4", "duplex": true, "reverseB": true,
                                      "rotateB": true, "padBlank": true, "fitToPage": false,
+                                     "grayscale": false,
                                      "faceDown": true, "showFirstTime": true, "notify": true,
                                      "welcomeShown": false, "pdfMenu": true])
         printer = defaults.string(forKey: "printer") ?? ""
@@ -250,6 +253,7 @@ final class Model: ObservableObject {
         rotateB = defaults.bool(forKey: "rotateB")
         padBlank = defaults.bool(forKey: "padBlank")
         fitToPage = defaults.bool(forKey: "fitToPage")
+        grayscale = defaults.bool(forKey: "grayscale")
         faceDown = defaults.bool(forKey: "faceDown")
         showFirstTime = defaults.bool(forKey: "showFirstTime")
         notify = defaults.bool(forKey: "notify")
@@ -460,10 +464,10 @@ final class Model: ObservableObject {
             phase = .failed("No se pudieron preparar las páginas.")
             return
         }
-        let p = printer, paper = paper, fit = fitToPage, n = copies, t = title
+        let p = printer, paper = paper, fit = fitToPage, n = copies, t = title, g = grayscale
         phase = .printingA
         Task {
-            let r = await Task.detached { Shell.lp(file: file, printer: p, title: t, paper: paper, fit: fit, copies: n) }.value
+            let r = await Task.detached { Shell.lp(file: file, printer: p, title: t, paper: paper, fit: fit, copies: n, grayscale: g) }.value
             if let e = r.error { phase = .failed(e); return }
             currentJob = r.id
             let ok = await waitForJob()
@@ -475,10 +479,10 @@ final class Model: ObservableObject {
     }
 
     private func send(_ file: URL, suffix: String, printing: Phase, next: Phase) {
-        let p = printer, paper = paper, fit = fitToPage, t = "\(title) - \(suffix)"
+        let p = printer, paper = paper, fit = fitToPage, t = "\(title) - \(suffix)", g = grayscale
         phase = printing
         Task {
-            let r = await Task.detached { Shell.lp(file: file, printer: p, title: t, paper: paper, fit: fit) }.value
+            let r = await Task.detached { Shell.lp(file: file, printer: p, title: t, paper: paper, fit: fit, grayscale: g) }.value
             if let e = r.error { phase = .failed(e); return }
             currentJob = r.id
             let ok = await waitForJob()
@@ -1138,6 +1142,7 @@ struct PrinterRows: View {
             Text("A5").tag("A5")
         }
         Toggle("Ajustar a la página", isOn: $m.fitToPage)
+        Toggle("Imprimir en grises", isOn: $m.grayscale)
     }
 }
 
