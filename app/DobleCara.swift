@@ -28,6 +28,12 @@ struct DobleCaraApp: App {
                 Button("Abrir PDF…") { model.openPanel() }
                     .keyboardShortcut("o")
                     .disabled(model.busy)
+                Menu("Abrir recientes") {
+                    ForEach(model.recentFiles, id: \.self) { u in
+                        Button(u.lastPathComponent) { model.load(u) }
+                    }
+                }
+                .disabled(model.recentFiles.isEmpty)
             }
             CommandGroup(replacing: .help) {
                 Button("Ver la bienvenida") { model.presentWelcome() }
@@ -190,6 +196,9 @@ final class Model: ObservableObject {
     @Published var doc: PDFDocument?
     @Published var phase: Phase = .idle
     @Published var printers: [String] = []
+    @Published var recentFiles: [URL] = [] {
+        didSet { defaults.set(recentFiles.map(\.path), forKey: "recentFiles") }
+    }
 
     // Ajustes (se recuerdan)
     @Published var printer: String { didSet { defaults.set(printer, forKey: "printer") } }
@@ -248,6 +257,7 @@ final class Model: ObservableObject {
                                      "welcomeShown": false, "pdfMenu": true])
         printer = defaults.string(forKey: "printer") ?? ""
         paper = defaults.string(forKey: "paper") ?? "A4"
+        recentFiles = (defaults.stringArray(forKey: "recentFiles") ?? []).map { URL(fileURLWithPath: $0) }
         duplex = defaults.bool(forKey: "duplex")
         reverseB = defaults.bool(forKey: "reverseB")
         rotateB = defaults.bool(forKey: "rotateB")
@@ -312,6 +322,10 @@ final class Model: ObservableObject {
         customPages = ""
         copies = 1
         phase = .idle
+        if let u, !recentFiles.contains(u) {
+            recentFiles.insert(u, at: 0)
+            if recentFiles.count > 10 { recentFiles.removeLast(recentFiles.count - 10) }
+        }
     }
 
     func openPanel() {
