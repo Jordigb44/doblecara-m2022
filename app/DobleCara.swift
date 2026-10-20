@@ -225,6 +225,10 @@ final class Model: ObservableObject {
         }
     }
 
+    // Estadísticas de uso
+    @Published var jobsCount: Int { didSet { defaults.set(jobsCount, forKey: "jobsCount") } }
+    @Published var sheetsSaved: Int { didSet { defaults.set(sheetsSaved, forKey: "sheetsSaved") } }
+
     // Ajustes por trabajo
     @Published var copies = 1
     @Published var pageMode: PageMode = .all {
@@ -270,6 +274,8 @@ final class Model: ObservableObject {
         showFirstTime = defaults.bool(forKey: "showFirstTime")
         notify = defaults.bool(forKey: "notify")
         welcomeShown = defaults.bool(forKey: "welcomeShown")
+        jobsCount = defaults.integer(forKey: "jobsCount")
+        sheetsSaved = defaults.integer(forKey: "sheetsSaved")
         // Activado por defecto: se crea (o se repara si la app cambió de sitio) al abrir la app,
         // salvo que el usuario lo haya quitado en Preferencias
         pdfMenu = defaults.bool(forKey: "pdfMenu")
@@ -511,6 +517,7 @@ final class Model: ObservableObject {
             guard phase == .printingA else { return }  // cancelado
             if !ok { phase = .failed("La impresión no terminó a tiempo. Revisa la impresora."); return }
             phase = .done
+            if !calibrating { recordJob() }
             if notify { Notifier.post("Impresión terminada", "«\(t)» ya está impreso.") }
         }
     }
@@ -536,8 +543,11 @@ final class Model: ObservableObject {
                 NSApp.activate(ignoringOtherApps: true)
                 NSApp.requestUserAttention(.criticalRequest)
                 NSSound(named: "Glass")?.play()
-            } else if next == .done && notify && !calibrating {
-                Notifier.post("Impresión terminada", "«\(title)» ya está impreso a doble cara.")
+            } else if next == .done {
+                if !calibrating { recordJob() }
+                if notify && !calibrating {
+                    Notifier.post("Impresión terminada", "«\(title)» ya está impreso a doble cara.")
+                }
             }
         }
     }
@@ -569,6 +579,13 @@ final class Model: ObservableObject {
     }
 
     func reset() { phase = .idle }
+
+    private func recordJob() {
+        jobsCount += 1
+        if effectiveDuplex {
+            sheetsSaved += max(0, selection.count * max(1, copies) - sheetCount)
+        }
+    }
 
     var flipSteps: [String] {
         let take = "Espera a que la impresora pare y recoge \(PagePlan.plural(sheetCount, "la hoja", "las hojas")) de la bandeja de salida."
@@ -1817,6 +1834,10 @@ struct PreferencesView: View {
                         .disabled(m.busy)
                     Button("Ver la bienvenida") { m.presentWelcome() }
                 }
+            }
+            Section("Estadísticas") {
+                LabeledContent("Trabajos impresos", value: "\(m.jobsCount)")
+                LabeledContent("Hojas ahorradas a doble cara", value: "\(m.sheetsSaved)")
             }
         }
         .formStyle(.grouped)
