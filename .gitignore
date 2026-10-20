@@ -1,8 +1,13 @@
 .DS_Store
 *.log
+*.bak
+*.dmg
+*.zip
+SHA256SUMS.txt
 diagnostico/diagnostico/
 diagnostico/*.prn
 diagnostico/*.ras
 diagnostico/*.txt
 *.app/
 dist/
+test/

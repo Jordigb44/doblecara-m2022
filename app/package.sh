@@ -5,7 +5,10 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-VERSION="${1:-1.0.0}"
+# La versión por defecto sale del Info.plist (fuente de verdad); se puede
+# sobrescribir pasándola como primer argumento: app/package.sh 1.2.0
+VERSION="${1:-$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$HERE/Info.plist" 2>/dev/null)}"
+VERSION="${VERSION:-1.0.0}"
 NAME="Doble Cara M2022"
 BASE="DobleCaraM2022-${VERSION}-macOS"
 DIST="$ROOT/dist"
