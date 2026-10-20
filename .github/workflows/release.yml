@@ -1,8 +1,7 @@
 name: Release
 
-# Calcula la próxima versión siguiendo SemVer (según los commits feat:/fix:/
-# breaking) y crea el tag vX.Y.Z. El workflow build.yml (en push de tag v*)
-# se encarga de compilar la app y publicar la release con los adjuntos.
+# En push a main (o manual) calcula la próxima versión con SemVer, la aplica a
+# Info.plist, compila la app universal y crea la release de GitHub.
 on:
   push:
     branches:
@@ -36,12 +35,41 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B main origin/main
 
-      - name: Bump de versión (SemVer) y publicar
+      - name: Bump de versión (SemVer)
+        id: semver
         env:
           BUMP_INPUT: ${{ github.event.inputs.bump }}
         run: |
-          if [ -n "$BUMP_INPUT" ]; then
-            ./scripts/bump-version.sh "--$BUMP_INPUT" --push
-          else
-            ./scripts/bump-version.sh --push
+          ARGS=""
+          [ -n "$BUMP_INPUT" ] && ARGS="--$BUMP_INPUT"
+          NEW="$(./scripts/bump-version.sh $ARGS --dry-run)"
+          if [ -z "$NEW" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Sin cambios de versión (no hay commits feat/fix/breaking)."
+            exit 0
           fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          ./scripts/bump-version.sh $ARGS
+          git add app/Info.plist
+          git commit -m "chore: bump versión a $NEW" || true
+          git tag "v$NEW"
+          git push origin "v$NEW"
+          git push origin main
+          echo "Nueva versión: $NEW"
+
+      - name: Empaquetar
+        if: steps.semver.outputs.skip != 'true'
+        run: ./app/package.sh "${{ steps.semver.outputs.version }}"
+
+      - name: Crear release
+        if: steps.semver.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.semver.outputs.version }}
+          name: Doble Cara M2022 ${{ steps.semver.outputs.version }}
+          files: |
+            dist/*.dmg
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
