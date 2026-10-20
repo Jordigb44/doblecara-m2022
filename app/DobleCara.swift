@@ -1154,6 +1154,43 @@ struct PageNavigator: View {
     }
 }
 
+/// Insignia superpuesta a la vista previa: cara/hoja de la página actual según
+/// la configuración (dúplex, giro, folleto o N-up).
+struct FaceBadge: View {
+    let slot: PagePlan.Slot?
+    let duplex: Bool
+    let rotateB: Bool
+    let pagesPerSheet: Int
+    let booklet: Bool
+
+    var body: some View {
+        if booklet || pagesPerSheet > 1 {
+            Text(pagesPerSheet > 1 ? "\(pagesPerSheet) páginas por hoja" : "Folleto: 2 páginas por hoja")
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.orange))
+                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+        } else if let slot {
+            let sideB = duplex && slot.sideB
+            HStack(spacing: 8) {
+                Text(duplex ? "Hoja \(slot.sheet) · Cara \(sideB ? "B" : "A")" : "Hoja \(slot.sheet)")
+                    .font(.caption.bold())
+                if sideB && rotateB {
+                    Label("girada 180°", systemImage: "rotate.right")
+                        .font(.caption2)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(sideB ? Color.orange : Color.accentColor))
+            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+        }
+    }
+}
+
 struct PreviewPane: View {
     @EnvironmentObject var m: Model
     @Binding var showPages: Bool
@@ -1203,6 +1240,14 @@ struct PreviewPane: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         PDFPreview(doc: m.doc, page: $page, zoom: $zoom, highlight: $highlight)
+                            .overlay(alignment: .topTrailing) {
+                                FaceBadge(slot: m.sheetPlan[page - 1],
+                                          duplex: m.effectiveDuplex,
+                                          rotateB: m.rotateB,
+                                          pagesPerSheet: m.pagesPerSheet,
+                                          booklet: m.booklet)
+                                    .padding(10)
+                            }
                         Divider()
                         HStack {
                             Button { zoom = max(0.25, (zoom == 0 ? 1 : zoom) / 1.25) } label: {
@@ -1336,7 +1381,10 @@ struct PageThumb: View {
         VStack(spacing: 6) {
             Group {
                 if let img = m.thumbnail(index) {
-                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .rotationEffect(.degrees(slot?.sideB == true && m.rotateB ? 180 : 0))
                 } else {
                     Rectangle().fill(Color.white).aspectRatio(0.707, contentMode: .fit)
                 }
@@ -1346,16 +1394,21 @@ struct PageThumb: View {
             .overlay(Rectangle().strokeBorder(on ? tint : Color.secondary.opacity(0.3), lineWidth: on ? 2.5 : 1))
             .shadow(color: .black.opacity(on ? 0.18 : 0.05), radius: 3, y: 1)
             .opacity(on ? 1 : 0.4)
-            .saturation(on ? 1 : 0)
+            .saturation(on && !m.grayscale ? 1 : 0)
             .overlay(alignment: .top) {
                 if let slot {
-                    Text(duplex ? "Hoja \(slot.sheet) · \(slot.sideB ? "B" : "A")" : "Hoja \(slot.sheet)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(tint))
-                        .offset(y: -8)
+                    HStack(spacing: 4) {
+                        Text(duplex ? "Hoja \(slot.sheet) · \(slot.sideB ? "B" : "A")" : "Hoja \(slot.sheet)")
+                        if slot.sideB && m.rotateB {
+                            Image(systemName: "rotate.right")
+                        }
+                    }
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(tint))
+                    .offset(y: -8)
                 }
             }
             Text(on ? "Página \(index + 1)" : "Página \(index + 1) · no")
