@@ -66,9 +66,7 @@ struct DobleCaraApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
-        if let u = urls.first(where: { $0.pathExtension.lowercased() == "pdf" }) ?? urls.first {
-            Task { @MainActor in Model.shared.load(u) }
-        }
+        Task { @MainActor in Model.shared.open(urls) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
@@ -214,6 +212,7 @@ final class Model: ObservableObject {
     @Published var recentFiles: [URL] = [] {
         didSet { defaults.set(recentFiles.map(\.path), forKey: "recentFiles") }
     }
+    @Published var queue: [URL] = []
 
     // Ajustes (se recuerdan)
     @Published var printer: String { didSet { defaults.set(printer, forKey: "printer") } }
@@ -356,7 +355,10 @@ final class Model: ObservableObject {
     }
 
     func load(_ u: URL) {
-        guard !busy, !calibrating else { NSSound.beep(); return }
+        guard !busy, !calibrating else {
+            queue.append(u)  // hay una impresión en curso: se encola
+            return
+        }
         // Se lee entero en memoria: el menú PDF de imprimir pasa archivos temporales
         // que el sistema puede borrar en cuanto la app los abre.
         let scoped = u.startAccessingSecurityScopedResource()
@@ -371,6 +373,25 @@ final class Model: ObservableObject {
         }
         setDocument(d, url: u)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Abre varios PDFs: el primero se carga y el resto se encolan
+    func open(_ urls: [URL]) {
+        let pdfs = urls.filter { $0.pathExtension.lowercased() == "pdf" }
+        guard let first = pdfs.first else { return }
+        if busy || calibrating {
+            queue.append(contentsOf: pdfs)
+        } else {
+            load(first)
+            queue.append(contentsOf: pdfs.dropFirst())
+        }
+    }
+
+    /// Pasa al siguiente documento encolado (si lo hay)
+    func advanceQueue() {
+        guard !queue.isEmpty else { return }
+        let u = queue.removeFirst()
+        load(u)
     }
 
     private func setDocument(_ d: PDFDocument?, url u: URL?) {
@@ -1046,8 +1067,8 @@ struct PreviewPane: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let u = urls.first else { return false }
-            m.load(u)
+            guard !urls.isEmpty else { return false }
+            m.open(urls)
             return true
         } isTargeted: { dropTargeted = $0 }
         .onReceive(m.$doc) { _ in page = 1 }
@@ -1438,6 +1459,12 @@ struct DonePanel: View {
                 Button("Imprimir otra vez") { m.reset() }
             }
             .padding(.top, 6)
+            if !m.queue.isEmpty {
+                Button { m.advanceQueue() } label: {
+                    Label("Siguiente documento (\(m.queue.count) en cola)", systemImage: "tray.full")
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(24)
     }
