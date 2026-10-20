@@ -1,0 +1,23 @@
+/* Traducción al inglés (los textos en español son la clave por defecto). */
+
+"Documento" = "Document";
+"Cara A" = "Side A";
+"Meter hojas" = "Refeed sheets";
+"Cara B" = "Side B";
+"Imprimir" = "Print";
+
+"Cancelar" = "Cancel";
+"Imprimir cara A" = "Print side A";
+"Imprimir cara B" = "Print side B";
+"Reimprimir cara B" = "Reprint side B";
+"Hecho" = "Done";
+
+"¡Listo!" = "All done!";
+"Abrir otro PDF…" = "Open another PDF…";
+"Imprimir otra vez" = "Print again";
+
+"Imprimiendo…" = "Printing…";
+"Imprimiendo la cara B…" = "Printing side B…";
+"Imprimiendo la cara A…" = "Printing side A…";
+
+"Cara A terminada" = "Side A finished";

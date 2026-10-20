@@ -38,6 +38,7 @@ APP="$W/${NAME}.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$W/DobleCara" "$APP/Contents/MacOS/"
 cp "$HERE/Info.plist" "$APP/Contents/"
+[ -d "$HERE/Resources" ] && cp -R "$HERE/Resources/." "$APP/Contents/Resources/" || true
 plutil -replace CFBundleShortVersionString -string "${VERSION}" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "${VERSION}" "$APP/Contents/Info.plist"
 cp "$W/AppIcon.icns" "$APP/Contents/Resources/"

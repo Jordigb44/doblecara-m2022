@@ -993,7 +993,9 @@ struct StepBar: View {
     @EnvironmentObject var m: Model
 
     var body: some View {
-        let steps = m.effectiveDuplex ? ["Documento", "Cara A", "Meter hojas", "Cara B"] : ["Documento", "Imprimir"]
+        let steps = m.effectiveDuplex
+            ? [String(localized: "Documento"), String(localized: "Cara A"), String(localized: "Meter hojas"), String(localized: "Cara B")]
+            : [String(localized: "Documento"), String(localized: "Imprimir")]
         let current = m.currentStep
         HStack(alignment: .top, spacing: 4) {
             ForEach(Array(steps.enumerated()), id: \.offset) { i, name in
@@ -1561,7 +1563,7 @@ struct PrintingPanel: View {
         let sideB = m.phase == .printingB
         VStack(spacing: 14) {
             ProgressView().controlSize(.large)
-            Text(!m.effectiveDuplex ? "Imprimiendo…" : sideB ? "Imprimiendo la cara B…" : "Imprimiendo la cara A…")
+            Text(!m.effectiveDuplex ? String(localized: "Imprimiendo…") : sideB ? String(localized: "Imprimiendo la cara B…") : String(localized: "Imprimiendo la cara A…"))
                 .font(.title3.weight(.semibold))
             Text(sideB ? "Ya casi está. Deja que la impresora termine."
                  : m.effectiveDuplex ? "No toques las hojas hasta que la impresora pare.\nTe avisaré cuando haya que darles la vuelta."
@@ -1584,7 +1586,7 @@ struct FlipPanel: View {
                         .font(.system(size: 34))
                         .foregroundStyle(Color.accentColor)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Cara A terminada").font(.title2.bold())
+                        Text(String(localized: "Cara A terminada")).font(.title2.bold())
                         Text(m.reinsertAsIs ? "Vuelve a meter las hojas tal cual salen" : "Ahora vuelve a meter las hojas").foregroundStyle(.secondary)
                     }
                 }
@@ -1623,13 +1625,13 @@ struct DonePanel: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 54))
                 .foregroundStyle(.green)
-            Text("¡Listo!").font(.title.bold())
+            Text(String(localized: "¡Listo!")).font(.title.bold())
             Text("«\(m.title)» ya está impreso\(m.effectiveDuplex ? " a doble cara" : "").\n\(m.summary)")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             HStack {
-                Button("Abrir otro PDF…") { m.openPanel() }
-                Button("Imprimir otra vez") { m.reset() }
+                Button(String(localized: "Abrir otro PDF…")) { m.openPanel() }
+                Button(String(localized: "Imprimir otra vez")) { m.reset() }
             }
             .padding(.top, 6)
             if !m.queue.isEmpty {
@@ -1658,31 +1660,31 @@ struct ActionBar: View {
             Spacer()
             switch m.phase {
             case .waitingFlip:
-                Button("Cancelar", role: .cancel) { m.cancel() }
+                Button(String(localized: "Cancelar"), role: .cancel) { m.cancel() }
                     .keyboardShortcut(.cancelAction)
                 Button { m.printSideB() } label: {
-                    Text("Imprimir cara B").frame(minWidth: 120)
+                    Text(String(localized: "Imprimir cara B")).frame(minWidth: 120)
                 }
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
             case .printingA, .printingB:
-                Button("Cancelar", role: .cancel) { m.cancel() }
+                Button(String(localized: "Cancelar"), role: .cancel) { m.cancel() }
                     .keyboardShortcut(.cancelAction)
             case .done:
                 Button { m.reset() } label: {
-                    Text("Hecho").frame(minWidth: 110)
+                    Text(String(localized: "Hecho")).frame(minWidth: 110)
                 }
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
             case .idle, .failed:
                 if m.canReprintB {
                     Button { m.printSideB() } label: {
-                        Label("Reimprimir cara B", systemImage: "arrow.clockwise")
+                        Label(String(localized: "Reimprimir cara B"), systemImage: "arrow.clockwise")
                     }
                 }
                 // Sin atajo de Intro: así pulsar Intro en un campo nunca manda a imprimir
                 Button { m.start() } label: {
-                    Text(m.effectiveDuplex ? "Imprimir cara A" : "Imprimir").frame(minWidth: 110)
+                    Text(m.effectiveDuplex ? String(localized: "Imprimir cara A") : String(localized: "Imprimir")).frame(minWidth: 110)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("p")
