@@ -5,15 +5,15 @@ name: Release
 # se encarga de compilar la app y publicar la release con los adjuntos.
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Tipo de bump (vacío = automático según commits)'
+        description: 'Tipo de bump: major, minor o patch (vacío = automático)'
         required: false
         default: ''
-        type: choice
-        options: ['', major, minor, patch]
+        type: string
 
 permissions:
   contents: write
@@ -25,8 +25,6 @@ concurrency:
 jobs:
   release:
     runs-on: macos-latest
-    # Evita bucles: si el commit ya es un bump de versión no hay nada que hacer
-    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, 'chore: bump')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +34,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B main origin/main
 
       - name: Bump de versión (SemVer) y publicar
         env:
