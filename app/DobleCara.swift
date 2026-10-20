@@ -1616,13 +1616,13 @@ struct SettingsForm: View {
                         .buttonStyle(.borderless).help("Abrir otro PDF")
                     if m.doc != nil {
                         Button { m.clearDocuments() } label: {
-                            Label("Quitar", systemImage: "xmark.circle")
+                            Image(systemName: "xmark.circle")
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
                         .help("Quitar el documento de la vista (sin borrar el archivo)")
                         Button(role: .destructive) { confirmDelete = true } label: {
-                            Label("Eliminar", systemImage: "trash")
+                            Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.red)
